@@ -5,6 +5,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 import { createApi } from './api.mjs'
+import { collectDismissedIds, stripDismissedMembers } from './filter.mjs'
 import { dismissMember } from './dismiss.mjs'
 import { openStore } from './store.mjs'
 import { listTeamSessions, readTeam } from './team-read.mjs'
@@ -16,6 +17,8 @@ export const inject = ['webServer']
 const DATA_DIR_ENV = 'DSH_TEAM_ADMIN_DATA_DIR'
 /** 路由前缀：webServer 只支持 exact/prefix 注册。 */
 const ROUTE_PREFIX = '/api/team-admin'
+/** 墓碑 id 缓存时长：过滤发生在每次会话列表响应上，短缓存足够。 */
+const DISMISSED_TTL_MS = 2000
 /** 与 package.json 版本保持一致（发布前由测试校验）。 */
 const PLUGIN_VERSION = '0.1.7'
 
@@ -61,4 +64,50 @@ export function apply(ctx) {
     () => ctx.webServer.register({ kind: 'prefix', path: ROUTE_PREFIX, handler }),
     'team-admin routes',
   )
+  if (!installSessionListFilter(ctx, { getStore, logSystem, silent: true }) && typeof ctx.inject === 'function') {
+    // 插件可能早于 sessionController 注册；等服务可用后再包一次。
+    ctx.inject(['sessionController'], (sub) => installSessionListFilter(sub, { getStore, logSystem }))
+  }
+}
+
+/**
+ * 给宿主的 sessionController.list 包一层：把已删除成员从 subagentCatalog / agentTeam.members 里摘掉。
+ * 顶部「子智能体」选择器与内置「智能体团队」面板都读这份响应，在源头过滤一次即可覆盖所有客户端，
+ * 不需要改宿主源码，也不用重编译。
+ * @param {object} ctx - Cordis 插件上下文。
+ * @param {{ getStore: () => Promise<object>, logSystem: (line: string) => void }} deps - 数据目录与日志。
+ * @returns {boolean} 成功包上返回 true；宿主没有该服务时返回 false。
+ */
+export function installSessionListFilter(ctx, { getStore, logSystem, silent = false }) {
+  const get = ctx !== null && typeof ctx?.get === 'function' ? ctx.get.bind(ctx) : null
+  const service = get === null ? undefined : get('sessionController')
+  if (service === null || service === undefined || typeof service.list !== 'function') {
+    if (silent !== true) logSystem('team-admin：未找到 sessionController.list，跳过会话列表过滤')
+    return false
+  }
+  const original = service.list
+  let cached = { at: 0, ids: new Set() }
+  const dismissedIds = async () => {
+    if (Date.now() - cached.at < DISMISSED_TTL_MS) return cached.ids
+    let ids = new Set()
+    try {
+      const store = await getStore()
+      ids = collectDismissedIds(await store.readAll())
+    } catch (error) {
+      logSystem(`team-admin：读取墓碑失败，本次不过滤会话列表（${error instanceof Error ? error.message : String(error)}）`)
+    }
+    cached = { at: Date.now(), ids }
+    return ids
+  }
+  service.list = async function teamAdminFilteredList(request, signal) {
+    const value = await original.call(this, request, signal)
+    try {
+      const ids = await dismissedIds()
+      return ids.size === 0 ? value : stripDismissedMembers(value, ids)
+    } catch (error) {
+      logSystem(`team-admin：过滤会话列表失败（${error instanceof Error ? error.message : String(error)}）`)
+      return value
+    }
+  }
+  return true
 }

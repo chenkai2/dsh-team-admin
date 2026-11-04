@@ -568,3 +568,70 @@ test('模块加载阶段就安装列表过滤器（早于 apply）', () => {
   assert.match(String(sandbox.window.fetch), /teamAdminAwareFetch/)
   assert.strictEqual(registrations.length, 1)
 })
+test('stripDismissedCatalogs：按墓碑摘掉 subagentCatalog 与 agentTeam.members 里的失效条目', () => {
+  const { sandbox } = loadApi()
+  const api = sandbox.__DshTeamAdminTest.helpers
+  const payload = { items: [{ projections: { values: {
+    subagentCatalog: [{ id: 'm1', label: 'A' }, { id: 'm2', label: 'B' }],
+    agentTeam: { members: [{ id: 'm1', name: 'client-ui' }, { id: 'm2', name: 'ui-debug' }] },
+  } } }] }
+  assert.strictEqual(api.stripDismissedCatalogs(payload, new Set(['m1'])), payload)
+  assert.deepStrictEqual(payload.items[0].projections.values.subagentCatalog, [{ id: 'm2', label: 'B' }])
+  assert.deepStrictEqual(payload.items[0].projections.values.agentTeam.members, [{ id: 'm2', name: 'ui-debug' }])
+  assert.strictEqual(api.stripDismissedCatalogs(null, new Set(['m1'])), null)
+})
+
+test('installSessionListFilter：只包装一次、相对路径也命中、其余请求直通', async () => {
+  const { sandbox } = loadApi()
+  const api = sandbox.__DshTeamAdminTest.helpers
+  const response = (payload) => ({
+    ok: true, status: 200, statusText: 'OK', headers: {},
+    json: async () => JSON.parse(JSON.stringify(payload)),
+    clone() { return { json: async () => JSON.parse(JSON.stringify(payload)) } },
+  })
+  sandbox.Response = class { constructor(body, init) { this.body = body; this.status = init === undefined ? 200 : init.status } }
+  sandbox.fetch = async (url) => {
+    if (url === api.DISMISSED_URL) return response({ ids: ['m1'] })
+    if (url === 'api/session/list') return response({ items: [{ subagentCatalog: [{ id: 'm1' }, { id: 'm2' }] }] })
+    return response({ other: true })
+  }
+  assert.strictEqual(api.installSessionListFilter(sandbox), true)
+  assert.strictEqual(api.installSessionListFilter(sandbox), false)
+  const filtered = await sandbox.fetch('api/session/list')
+  assert.deepStrictEqual(JSON.parse(filtered.body).items[0].subagentCatalog, [{ id: 'm2' }])
+  assert.strictEqual((await sandbox.fetch('/api/other')).status, 200)
+})
+
+test('模块加载阶段就安装过滤器（早于 apply）', () => {
+  const registrations = []
+  const sandbox = {
+    console: { log() {}, warn() {}, error() {} },
+    window: {
+      __ModuleLoader__: { load: (registration) => registrations.push(registration) },
+      fetch: async () => ({ ok: true, json: async () => ({ ids: [] }) }),
+    },
+  }
+  runInNewContext(SOURCE, sandbox, { filename: 'src/client.js' })
+  assert.strictEqual(sandbox.window.__dshTeamAdminSessionListFilter__, true)
+  assert.match(String(sandbox.window.fetch), /teamAdminAwareFetch/)
+  assert.strictEqual(registrations.length, 1)
+})
+
+test('installResponseFilter：宿主绕过 window.fetch 时，解析 JSON 的消费方也拿到过滤后数据', async () => {
+  const { sandbox } = loadApi()
+  const api = sandbox.__DshTeamAdminTest.helpers
+  sandbox.fetch = async () => ({ ok: true, json: async () => ({ ids: ['m1'] }) })
+  await api.refreshDismissedIds()
+  class FakeResponse {
+    constructor(body) { this.body = body }
+    async json() { return JSON.parse(this.body) }
+    async text() { return this.body }
+  }
+  const scope = { Response: FakeResponse }
+  assert.strictEqual(api.installResponseFilter(scope), true)
+  assert.strictEqual(api.installResponseFilter(scope), false)
+  const parsed = await new FakeResponse(JSON.stringify({ values: { subagentCatalog: [{ id: 'm1' }, { id: 'm2' }] } })).json()
+  assert.deepStrictEqual(parsed.values.subagentCatalog, [{ id: 'm2' }])
+  const text = await new FakeResponse(JSON.stringify({ values: { agentTeam: { members: [{ id: 'm1' }, { id: 'm3' }] } } })).text()
+  assert.deepStrictEqual(JSON.parse(text).values.agentTeam.members, [{ id: 'm3' }])
+})

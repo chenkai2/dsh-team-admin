@@ -172,6 +172,7 @@
   const DISMISS_URL = API_BASE + '/dismiss'
   const DISMISSED_URL = API_BASE + '/dismissed'
   const LIST_FILTER_FLAG = '__dshTeamAdminSessionListFilter__'
+  const RESPONSE_FILTER_FLAG = '__dshTeamAdminResponseFilter__'
 
   function dismissPayload(sessionId, name) {
     return { sessionId: sessionId, name: name, deleteSession: true }
@@ -215,6 +216,36 @@
     return dismissedIds
   }
 
+  // 宿主可能在插件加载前就把全局 fetch 抓进闭包，包装 window.fetch 会被绕过；
+  // 再补一层 Response.prototype 过滤，任何解析 JSON 的消费方都会拿到过滤后的数据。
+  function installResponseFilter(scope) {
+    const ResponseCtor = scope === null || scope === undefined ? undefined : scope.Response
+    if (typeof ResponseCtor !== 'function') return false
+    const proto = ResponseCtor.prototype
+    if (proto === undefined || proto === null || proto[RESPONSE_FILTER_FLAG] === true) return false
+    proto[RESPONSE_FILTER_FLAG] = true
+    const originalJson = proto.json
+    const originalText = proto.text
+    if (typeof originalJson === 'function') {
+      proto.json = async function teamAdminAwareJson() {
+        const value = await originalJson.call(this)
+        try { return stripDismissedCatalogs(value, dismissedIds) } catch (error) { return value }
+      }
+    }
+    if (typeof originalText === 'function') {
+      proto.text = async function teamAdminAwareText() {
+        const text = await originalText.call(this)
+        if (typeof text !== 'string' || (text.indexOf('subagentCatalog') < 0 && text.indexOf('agentTeam') < 0)) return text
+        try {
+          const value = JSON.parse(text)
+          stripDismissedCatalogs(value, dismissedIds)
+          return JSON.stringify(value)
+        } catch (error) { return text }
+      }
+    }
+    return true
+  }
+
   function installSessionListFilter(win) {
     const scope = win !== undefined ? win : (typeof window === 'undefined' ? null : window)
     if (scope === null || scope === undefined) return false
@@ -225,10 +256,12 @@
     const original = scope.fetch
     if (typeof original !== 'function') return false
     scope[LIST_FILTER_FLAG] = true
+    installResponseFilter(scope)
     dismissedReady = refreshDismissedIds()
     scope.fetch = async function teamAdminAwareFetch(input, init) {
       const url = typeof input === 'string' ? input : (isRecord(input) && typeof input.url === 'string' ? input.url : '')
-      if (url.indexOf('/api/session/list') < 0) return await original(input, init)
+      // 宿主用相对路径（api/session/list，无前导 /），按子串匹配兼容两种形态。
+      if (url.indexOf('api/session/list') < 0) return await original(input, init)
       if (dismissedReady !== null) await dismissedReady
       const response = await original(input, init)
       if (dismissedIds.size === 0 || response.ok !== true) return response
@@ -1053,6 +1086,7 @@
         DISMISSED_URL: DISMISSED_URL,
         stripDismissedCatalogs: stripDismissedCatalogs,
         installSessionListFilter: installSessionListFilter,
+        installResponseFilter: installResponseFilter,
         refreshDismissedIds: refreshDismissedIds,
         DEBOUNCE_MS: DEBOUNCE_MS,
         CARD_TITLE: CARD_TITLE,
