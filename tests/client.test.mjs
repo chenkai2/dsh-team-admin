@@ -521,6 +521,9 @@ test('stripDismissedCatalogs：按墓碑摘掉 subagentCatalog 失效条目，�
   assert.strictEqual(api.stripDismissedCatalogs(null, new Set(['m1'])), null)
   const untouched = { value: 1 }
   assert.strictEqual(api.stripDismissedCatalogs(untouched, new Set()), untouched)
+  const roster = { projections: { values: { agentTeam: { members: [{ id: 'm1', name: 'client-ui' }, { id: 'm2', name: 'ui-debug' }] } } } }
+  api.stripDismissedCatalogs(roster, new Set(['m1']))
+  assert.deepStrictEqual(roster.projections.values.agentTeam.members, [{ id: 'm2', name: 'ui-debug' }])
   const unrelated = { items: [{ values: { subagentCatalog: 'not-an-array' } }] }
   assert.deepStrictEqual(api.stripDismissedCatalogs(unrelated, new Set(['m1'])), unrelated)
 })

@@ -186,13 +186,15 @@
 
   function stripDismissedCatalogs(payload, dismissed) {
     if (payload === null || typeof payload !== 'object' || dismissed === undefined || dismissed.size === 0) return payload
+    const keep = (entry) => !(entry !== null && typeof entry === 'object' && typeof entry.id === 'string' && dismissed.has(entry.id))
     const visit = (node, depth) => {
       if (node === null || typeof node !== 'object' || depth > 6) return
-      if (Array.isArray(node.subagentCatalog)) {
-        node.subagentCatalog = node.subagentCatalog.filter((entry) => !(entry !== null && typeof entry === 'object' && typeof entry.id === 'string' && dismissed.has(entry.id)))
-      }
+      // 1) 顶部「子智能体」选择器：宿主 catalog 投影
+      if (Array.isArray(node.subagentCatalog)) node.subagentCatalog = node.subagentCatalog.filter(keep)
+      // 2) 「智能体团队」面板：宿主 roster 投影（成员数组）
+      if (isRecord(node.agentTeam) && Array.isArray(node.agentTeam.members)) node.agentTeam.members = node.agentTeam.members.filter(keep)
       for (const key of Object.keys(node)) {
-        if (key === 'subagentCatalog') continue
+        if (key === 'subagentCatalog' || key === 'agentTeam') continue
         visit(node[key], depth + 1)
       }
     }
