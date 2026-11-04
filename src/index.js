@@ -21,12 +21,15 @@ const ROUTE_PREFIX = '/api/team-admin'
 const DISMISSED_TTL_MS = 2000
 /** 包装标记：apply 与延迟注入可能都执行一次，避免重复包装。 */
 const FILTER_MARK = Symbol.for('dsh.team-admin.projection-filter')
+/** roster 预算标记与刷新句柄：名额 = 配置上限 + 已删除成员数。 */
+const ROSTER_MARK = Symbol.for('dsh.team-admin.roster-budget')
+const ROSTER_REFRESH = Symbol.for('dsh.team-admin.roster-refresh')
 /** 单值出口：一次请求/一次流的快照。 */
 const UNARY_METHODS = ['list', 'projections']
 /** 流出口：control 基线携带全部投影，follow 携带单个会话的开场快照。 */
 const STREAM_METHODS = ['control', 'follow']
 /** 与 package.json 版本保持一致（发布前由测试校验）。 */
-const PLUGIN_VERSION = '0.1.9'
+const PLUGIN_VERSION = '0.2.0'
 
 /**
  * 解析插件数据目录。
@@ -64,12 +67,23 @@ export function apply(ctx) {
     getStore,
     version: PLUGIN_VERSION,
     logSystem,
-    services: { listTeamSessions, readTeam, dismissMember },
+    services: {
+      listTeamSessions,
+      readTeam,
+      dismissMember,
+      // 删除成功后释放名额：名额外加数 = 墓碑数。
+      onMemberDismissed: () => { void ensureBudget()?.() },
+    },
   })
   ctx.effect(
     () => ctx.webServer.register({ kind: 'prefix', path: ROUTE_PREFIX, handler }),
     'team-admin routes',
   )
+  const ensureBudget = () => installRosterBudget(ctx, { getStore, logSystem, silent: true })
+  ensureBudget()
+  if (typeof ctx.inject === 'function') {
+    ctx.inject(['agentTeams'], (sub) => installRosterBudget(sub, { getStore, logSystem }))
+  }
   if (!installSessionListFilter(ctx, { getStore, logSystem, silent: true }) && typeof ctx.inject === 'function') {
     // 插件可能早于 sessionController 注册；等服务可用后再包一次。
     ctx.inject(['sessionController'], (sub) => installSessionListFilter(sub, { getStore, logSystem }))
@@ -147,4 +161,41 @@ export function installSessionListFilter(ctx, { getStore, logSystem, silent = fa
   }
   service[FILTER_MARK] = true
   return true
+}
+
+/**
+ * 把「已删除成员」占掉的名额还给 roster：宿主用 roster 的 append-only 成员数判断 maxMembers，
+ * 删除只写墓碑不删记录，所以这里把上限动态抬到 `配置上限 + 墓碑数`。
+ * @param {object} ctx - Cordis 插件上下文。
+ * @param {{ getStore: () => Promise<object>, logSystem: (line: string) => void, silent?: boolean }} deps - 存储与日志。
+ * @returns {null | (() => Promise<number>)} 刷新预算的函数；宿主没有 agentTeams 时返回 null。
+ */
+export function installRosterBudget(ctx, { getStore, logSystem, silent = false }) {
+  const get = ctx !== null && typeof ctx?.get === 'function' ? ctx.get.bind(ctx) : null
+  const service = get === null ? undefined : get('agentTeams')
+  const roster = service === null || service === undefined ? undefined : service.roster
+  if (roster === undefined || roster === null || typeof roster.maxMembers !== 'number') {
+    if (silent !== true) logSystem('team-admin：未找到 agentTeams.roster，跳过名额回收')
+    return null
+  }
+  if (roster[ROSTER_MARK] === true) return roster[ROSTER_REFRESH]
+  const base = roster.maxMembers
+  const budget = { extra: 0 }
+  Object.defineProperty(roster, 'maxMembers', {
+    configurable: true,
+    enumerable: true,
+    get: () => base + budget.extra,
+  })
+  roster[ROSTER_MARK] = true
+  roster[ROSTER_REFRESH] = async () => {
+    try {
+      const store = await getStore()
+      budget.extra = collectDismissedIds(await store.readAll()).size
+    } catch (error) {
+      logSystem(`team-admin：读取墓碑失败，名额不回收（${error instanceof Error ? error.message : String(error)}）`)
+    }
+    return budget.extra
+  }
+  void roster[ROSTER_REFRESH]()
+  return roster[ROSTER_REFRESH]
 }

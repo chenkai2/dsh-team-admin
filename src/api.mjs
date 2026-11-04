@@ -132,6 +132,7 @@ export function createApi({ ctx, getStore, version, logSystem, services }) {
           { sessionId, name, deleteSession: body.deleteSession !== false },
           { store, logSystem },
         )
+        if (typeof services.onMemberDismissed === 'function') services.onMemberDismissed()
         sendJson(res, 200, { ok: true, ...result })
         return
       }
