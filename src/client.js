@@ -170,9 +170,75 @@
   }
 
   const DISMISS_URL = API_BASE + '/dismiss'
+  const DISMISSED_URL = API_BASE + '/dismissed'
+  const LIST_FILTER_FLAG = '__dshTeamAdminSessionListFilter__'
 
   function dismissPayload(sessionId, name) {
     return { sessionId: sessionId, name: name, deleteSession: true }
+  }
+
+  // —— 宿主会话列表过滤：把已删除成员从 subagentCatalog 投影里摘掉 ——
+  // 宿主 catalog 与 roster 都是 append-only，删会话不会撤销 catalog 事件；
+  // 这里在本插件内拦截 /api/session/list 的响应，按墓碑把失效条目过滤掉，
+  // 不修改宿主源码，也不需要重编译。
+  let dismissedIds = new Set()
+  let dismissedReady = null
+
+  function stripDismissedCatalogs(payload, dismissed) {
+    if (payload === null || typeof payload !== 'object' || dismissed === undefined || dismissed.size === 0) return payload
+    const visit = (node, depth) => {
+      if (node === null || typeof node !== 'object' || depth > 6) return
+      if (Array.isArray(node.subagentCatalog)) {
+        node.subagentCatalog = node.subagentCatalog.filter((entry) => !(entry !== null && typeof entry === 'object' && typeof entry.id === 'string' && dismissed.has(entry.id)))
+      }
+      for (const key of Object.keys(node)) {
+        if (key === 'subagentCatalog') continue
+        visit(node[key], depth + 1)
+      }
+    }
+    visit(payload, 0)
+    return payload
+  }
+
+  async function refreshDismissedIds() {
+    try {
+      const response = await fetch(DISMISSED_URL, { headers: { accept: 'application/json' } })
+      if (response.ok !== true) return dismissedIds
+      const payload = await response.json()
+      const ids = isRecord(payload) && Array.isArray(payload.ids) ? payload.ids : []
+      dismissedIds = new Set(ids.filter((id) => typeof id === 'string' && id !== ''))
+    } catch (error) {
+      // 墓碑拿不到就放行原始列表：过滤是增强，不是前置条件。
+    }
+    return dismissedIds
+  }
+
+  function installSessionListFilter(win) {
+    const scope = win !== undefined ? win : (typeof window === 'undefined' ? null : window)
+    if (scope === null || scope === undefined) return false
+    if (scope[LIST_FILTER_FLAG] === true) {
+      dismissedReady = refreshDismissedIds()
+      return false
+    }
+    const original = scope.fetch
+    if (typeof original !== 'function') return false
+    scope[LIST_FILTER_FLAG] = true
+    dismissedReady = refreshDismissedIds()
+    scope.fetch = async function teamAdminAwareFetch(input, init) {
+      const url = typeof input === 'string' ? input : (isRecord(input) && typeof input.url === 'string' ? input.url : '')
+      if (url.indexOf('/api/session/list') < 0) return await original(input, init)
+      if (dismissedReady !== null) await dismissedReady
+      const response = await original(input, init)
+      if (dismissedIds.size === 0 || response.ok !== true) return response
+      try {
+        const body = await response.clone().json()
+        stripDismissedCatalogs(body, dismissedIds)
+        return new Response(JSON.stringify(body), { status: response.status, statusText: response.statusText, headers: response.headers })
+      } catch (error) {
+        return response
+      }
+    }
+    return true
   }
 
   // —— 响应校验：缺字段回退默认值，形态不对返回可展示的错误 ——
@@ -788,6 +854,7 @@
         return
       }
       state.confirm = null
+      dismissedReady = refreshDismissedIds()
       state.notice = { text: dismissResultText(readDismissResult(outcome.data, target)) }
       render()
       await loadTeam(state.selectedId)
@@ -847,6 +914,7 @@
       throw new Error('mount(container) 需要一个可挂载的 DOM 元素')
     }
     ensureStyle(typeof document === 'undefined' ? null : document)
+    installSessionListFilter()
     const controller = createPanelController()
     container.appendChild(controller.root)
     controller.start()
@@ -922,6 +990,7 @@
     return {
       inject: ['slots'],
       apply(ctx) {
+        installSessionListFilter()
         const slots = ctx !== null && ctx !== undefined && ctx.slots !== undefined ? ctx.slots : null
         if (slots === null || typeof slots.inject !== 'function' || typeof slots.register !== 'function') {
           console.warn('[team-admin] 宿主未提供 slots 服务，配置卡片未注册')
@@ -979,6 +1048,10 @@
         PANEL_LABEL: PANEL_LABEL,
         PANEL_ORDER: PANEL_ORDER,
         API_BASE: API_BASE,
+        DISMISSED_URL: DISMISSED_URL,
+        stripDismissedCatalogs: stripDismissedCatalogs,
+        installSessionListFilter: installSessionListFilter,
+        refreshDismissedIds: refreshDismissedIds,
         DEBOUNCE_MS: DEBOUNCE_MS,
         CARD_TITLE: CARD_TITLE,
         CARD_SUMMARY: CARD_SUMMARY,

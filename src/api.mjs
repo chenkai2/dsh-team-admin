@@ -92,6 +92,22 @@ export function createApi({ ctx, getStore, version, logSystem, services }) {
         return
       }
 
+      if (path === '/api/team-admin/dismissed') {
+        if (method !== 'GET') { sendJson(res, 405, { error: '请求方法不支持' }); return }
+        const store = await getStore()
+        const state = await store.readAll()
+        const buckets = state !== null && typeof state === 'object' && typeof state.dismissed === 'object' && state.dismissed !== null
+          ? state.dismissed
+          : {}
+        const ids = []
+        for (const bucket of Object.values(buckets)) {
+          if (bucket === null || typeof bucket !== 'object') continue
+          for (const memberId of Object.keys(bucket)) ids.push(memberId)
+        }
+        sendJson(res, 200, { ids })
+        return
+      }
+
       if (path === '/api/team-admin/team') {
         if (method !== 'GET') { sendJson(res, 405, { error: '请求方法不支持' }); return }
         const sessionId = queryValue(url, 'sessionId')

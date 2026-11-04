@@ -161,3 +161,21 @@ test('malformed JSON body is rejected', async () => {
   assert.equal(res.statusCode, 400)
   assert.match(res.payload.error, /合法 JSON/)
 })
+test('dismissed lists tombstoned member ids for the client filter', async () => {
+  const api = createApi({
+    ...base,
+    getStore: async () => ({ readAll: async () => ({ version: 1, dismissed: { lead1: { m1: {}, m2: {} } } }) }),
+  })
+  const res = makeRes()
+  await api(makeReq({ url: '/api/team-admin/dismissed' }), res)
+  assert.equal(res.statusCode, 200)
+  assert.deepEqual(res.payload.ids.sort(), ['m1', 'm2'])
+})
+
+test('dismissed tolerates a missing or malformed state', async () => {
+  const api = createApi({ ...base, getStore: async () => ({ readAll: async () => ({ version: 1 }) }) })
+  const res = makeRes()
+  await api(makeReq({ url: '/api/team-admin/dismissed' }), res)
+  assert.equal(res.statusCode, 200)
+  assert.deepEqual(res.payload.ids, [])
+})

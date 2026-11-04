@@ -508,3 +508,46 @@ test('整页面板撑满：卡片与左右两栏一路 flex:1，列表不再固�
   // 小屏断点仍在
   assert.match(style.textContent, /@media \(max-width:760px\)/)
 })
+
+// —— 宿主会话列表过滤（不改宿主源码，插件内拦截 fetch） ——
+
+test('stripDismissedCatalogs：按墓碑摘掉 subagentCatalog 失效条目，其余原样', () => {
+  const { sandbox } = loadApi()
+  const api = sandbox.__DshTeamAdminTest.helpers
+  const payload = { items: [{ projections: { values: { subagentCatalog: [{ id: 'm1', label: 'A' }, { id: 'm2', label: 'B' }] } } }] }
+  const returned = api.stripDismissedCatalogs(payload, new Set(['m1']))
+  assert.strictEqual(returned, payload)
+  assert.deepStrictEqual(payload.items[0].projections.values.subagentCatalog, [{ id: 'm2', label: 'B' }])
+  assert.strictEqual(api.stripDismissedCatalogs(null, new Set(['m1'])), null)
+  const untouched = { value: 1 }
+  assert.strictEqual(api.stripDismissedCatalogs(untouched, new Set()), untouched)
+  const unrelated = { items: [{ values: { subagentCatalog: 'not-an-array' } }] }
+  assert.deepStrictEqual(api.stripDismissedCatalogs(unrelated, new Set(['m1'])), unrelated)
+})
+
+test('installSessionListFilter：只包装一次、只改 /api/session/list 响应、失败放行', async () => {
+  const { sandbox } = loadApi()
+  const api = sandbox.__DshTeamAdminTest.helpers
+  const calls = []
+  const response = (payload) => ({
+    ok: true, status: 200, statusText: 'OK', headers: {},
+    json: async () => JSON.parse(JSON.stringify(payload)),
+    clone() { return { json: async () => JSON.parse(JSON.stringify(payload)) } },
+  })
+  sandbox.Response = class {
+    constructor(body, init) { this.body = body; this.status = init === undefined ? 200 : init.status }
+  }
+  sandbox.fetch = async (url) => {
+    calls.push(url)
+    if (url === api.DISMISSED_URL) return response({ ids: ['m1'] })
+    if (url === '/api/session/list') return response({ items: [{ subagentCatalog: [{ id: 'm1' }, { id: 'm2' }] }] })
+    return response({ other: true })
+  }
+  assert.strictEqual(api.installSessionListFilter(sandbox), true)
+  assert.strictEqual(api.installSessionListFilter(sandbox), false)
+  const filtered = await sandbox.fetch('/api/session/list')
+  assert.deepStrictEqual(JSON.parse(filtered.body).items[0].subagentCatalog, [{ id: 'm2' }])
+  const other = await sandbox.fetch('/api/other')
+  assert.strictEqual(other.status, 200)
+  assert.ok(calls.includes(api.DISMISSED_URL))
+})
