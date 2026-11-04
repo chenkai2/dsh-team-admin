@@ -5,7 +5,7 @@ import { cp, lstat, mkdir, rename, rm } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
 
 import { AdminError } from './error.mjs'
-import { parseRoster, readSessionLog, statSnapshot } from './team-read.mjs'
+import { invalidateSessionListCache, parseRoster, readSessionLog, statSnapshot } from './team-read.mjs'
 
 /** 停止成员的总等待上限（契约固定 15s）。 */
 const DEFAULT_INTERRUPT_TIMEOUT_MS = 15_000
@@ -225,6 +225,8 @@ export async function dismissMember(ctx, request, options = {}) {
             dirName: memberId + '-' + stamp,
           })
           sessionDeleted = true
+          // 会话文件已消失：让下一轮列表 / 团队详情立刻重扫，而不是等 60s 缓存过期。
+          invalidateSessionListCache(ctx)
         } catch (error) {
           logSystem('[team-admin] 移动成员 ' + memberId + ' 的会话失败：' + String(error?.stack ?? error))
           throw new AdminError('成员会话移动失败，请检查服务端日志', 'system', 500)

@@ -31,11 +31,13 @@ function snapshot({ id, cwd = '/work', createdAt = 1, parentSession, path }) {
   }
 }
 
-/** 假 sessionPersistence：list/stat/open 三者足够本模块使用。 */
+/** 假 sessionPersistence：list/stat/open 三者足够本模块使用（listCalls 用于断言缓存命中）。 */
 function fakePersistence({ snapshots, logs = new Map(), opens = [] }) {
   const byId = new Map(snapshots.map((item) => [item.header.id, item]))
-  return {
+  const api = {
+    listCalls: 0,
     async list() {
+      api.listCalls += 1
       return snapshots.slice()
     },
     async stat(id) {
@@ -59,6 +61,7 @@ function fakePersistence({ snapshots, logs = new Map(), opens = [] }) {
       }
     },
   }
+  return api
 }
 
 /** 假 agents 服务。 */
@@ -70,10 +73,11 @@ function fakeAgents(agents = new Map()) {
 }
 
 /** 假 ctx：可选服务都经 ctx.get 取。 */
-function fakeCtx({ persistence, agents, sessionQuery }) {
+function fakeCtx({ persistence, agents, sessionQuery, projections }) {
   const services = { sessionPersistence: persistence }
   if (agents !== undefined) services.agents = agents
   if (sessionQuery !== undefined) services.sessionQuery = sessionQuery
+  if (projections !== undefined) services.sessionProjectionCache = projections
   return { get: (name) => services[name] }
 }
 
@@ -270,4 +274,124 @@ test('readTeam rejects unknown and non-root sessions', async (t) => {
     assert.equal(error.message, '只能管理根会话的团队')
     return true
   })
+})
+test('listTeamSessions caches the scan: repeat calls skip persistence.list and still filter correctly', async (t) => {
+  const root = await tempRoot(t)
+  const leadA = await touch(join(root, 'proj', 'lead-a', 'v4.jsonl'), Date.now())
+  const leadB = await touch(join(root, 'proj', 'lead-b', 'v4.jsonl'), Date.now() - 5_000)
+  const persistence = fakePersistence({
+    snapshots: [
+      snapshot({ id: 'lead-a', createdAt: 100, cwd: '/tmp/alpha', path: leadA }),
+      snapshot({ id: 'lead-b', createdAt: 200, cwd: '/tmp/beta', path: leadB }),
+    ],
+  })
+  const projections = {
+    cachedSnapshot(header) {
+      const titles = { 'lead-a': 'Alpha 团队', 'lead-b': 'Beta 团队' }
+      return { asOfSeq: 1, values: { title: titles[header.id] ?? null } }
+    },
+  }
+  const ctx = fakeCtx({ persistence, projections })
+
+  const first = await listTeamSessions(ctx, {})
+  assert.equal(persistence.listCalls, 1)
+  assert.deepEqual(first.map((row) => row.id), ['lead-a', 'lead-b'])
+  assert.deepEqual(first.map((row) => row.title), ['Alpha 团队', 'Beta 团队'])
+
+  // 命中缓存：不再 list()，limit 在缓存结果上应用
+  const limited = await listTeamSessions(ctx, { limit: 1 })
+  assert.equal(persistence.listCalls, 1)
+  assert.deepEqual(limited.map((row) => row.id), ['lead-a'])
+
+  // 命中缓存：query 也在缓存结果上过滤
+  const filtered = await listTeamSessions(ctx, { query: 'beta' })
+  assert.equal(persistence.listCalls, 1)
+  assert.deepEqual(filtered.map((row) => row.id), ['lead-b'])
+  const byTitle = await listTeamSessions(ctx, { query: 'ALPHA' })
+  assert.equal(persistence.listCalls, 1)
+  assert.deepEqual(byTitle.map((row) => row.id), ['lead-a'])
+})
+
+test('concurrent cold calls share one scan', async (t) => {
+  const root = await tempRoot(t)
+  const leadA = await touch(join(root, 'proj', 'lead-a', 'v4.jsonl'), Date.now())
+  const persistence = fakePersistence({
+    snapshots: [snapshot({ id: 'lead-a', path: leadA })],
+  })
+  const ctx = fakeCtx({ persistence })
+  const [one, two, three] = await Promise.all([
+    listTeamSessions(ctx, {}),
+    listTeamSessions(ctx, {}),
+    listTeamSessions(ctx, {}),
+  ])
+  assert.equal(persistence.listCalls, 1)
+  assert.deepEqual(one.map((row) => row.id), ['lead-a'])
+  assert.deepEqual(two.map((row) => row.id), ['lead-a'])
+  assert.deepEqual(three.map((row) => row.id), ['lead-a'])
+})
+
+test('expired scan cache is rescanned', async (t) => {
+  const root = await tempRoot(t)
+  const leadA = await touch(join(root, 'proj', 'lead-a', 'v4.jsonl'), Date.now())
+  const persistence = fakePersistence({
+    snapshots: [snapshot({ id: 'lead-a', path: leadA })],
+  })
+  const ctx = fakeCtx({ persistence })
+  await listTeamSessions(ctx, {})
+  assert.equal(persistence.listCalls, 1)
+  await listTeamSessions(ctx, { maxAgeMs: 0 })
+  assert.equal(persistence.listCalls, 2)
+  await listTeamSessions(ctx, {})
+  assert.equal(persistence.listCalls, 2)
+})
+
+test('titles come from the host projection cache without reading logs', async (t) => {
+  const root = await tempRoot(t)
+  const opens = []
+  const leadA = await touch(join(root, 'proj', 'lead-a', 'v4.jsonl'), Date.now())
+  const leadB = await touch(join(root, 'proj', 'lead-b', 'v4.jsonl'), Date.now() - 1_000)
+  const persistence = fakePersistence({
+    snapshots: [
+      snapshot({ id: 'lead-a', path: leadA }),
+      snapshot({ id: 'lead-b', path: leadB }),
+    ],
+    opens,
+  })
+  const seen = []
+  const projections = {
+    cachedSnapshot(header, keys) {
+      seen.push(header.id)
+      assert.deepEqual(keys, ['title'])
+      const titles = { 'lead-a': '投影里的标题', 'lead-b': '另一条投影标题' }
+      return { asOfSeq: 1, values: { title: titles[header.id] ?? null } }
+    },
+  }
+  const ctx = fakeCtx({ persistence, projections })
+  const rows = await listTeamSessions(ctx, {})
+  assert.deepEqual(rows.map((row) => row.title), ['投影里的标题', '另一条投影标题'])
+  assert.deepEqual(seen.sort(), ['lead-a', 'lead-b'])
+  assert.deepEqual(opens, [])
+})
+
+test('readTeam exposes sizes and reuses the cached scan for member sessions', async (t) => {
+  const root = await tempRoot(t)
+  const leadPath = await touch(join(root, 'proj', 'lead-1', 'v4.jsonl'), Date.now())
+  const childPath = await touch(join(root, 'proj', 'c1', 'v4.jsonl'), Date.now() - 30_000)
+  const persistence = fakePersistence({
+    snapshots: [
+      snapshot({ id: 'lead-1', path: leadPath }),
+      snapshot({ id: 'c1', parentSession: 'lead-1', path: childPath }),
+    ],
+    logs: new Map([['lead-1', [
+      { type: 'team/member', seq: 1, time: 1, data: { version: 2, teamId: 'lead-1', member: { id: 'c1', name: 'qa', description: '验收', provider: 'spawn', context: 'fresh', phase: 'active' } } },
+    ]]]),
+  })
+  const ctx = fakeCtx({ persistence })
+  const store = { async listDismissed() { return [] } }
+  const team = await readTeam(ctx, { sessionId: 'lead-1', store })
+  assert.equal(team.members[0].sessionExists, true)
+  assert.ok(team.members[0].lastActivityAt > 0)
+  // 团队详情与之后的列表共用同一次扫描
+  await listTeamSessions(ctx, {})
+  assert.equal(persistence.listCalls, 1)
 })
