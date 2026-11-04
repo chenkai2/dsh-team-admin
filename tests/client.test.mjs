@@ -89,7 +89,14 @@ test('测试可见面提供 mount(container) 与 helpers，且不依赖 ctx.slot
   assert.throws(() => api.mount(null), /需要一个可挂载的 DOM 元素/)
 })
 
-// —— factory / apply：两处槽位 ——
+test('helpers 暴露全局面板入口常量（id / label / order）', () => {
+  const { helpers } = loadApi().sandbox.__DshTeamAdminTest
+  assert.strictEqual(helpers.PANEL_ID, 'team-admin')
+  assert.strictEqual(helpers.PANEL_LABEL, '团队管理')
+  assert.strictEqual(helpers.PANEL_ORDER, 20)
+})
+
+// —— factory / apply：全局面板入口 + 两处配置卡片 ——
 
 test('factory 返回 { inject: ["slots"], apply }', () => {
   const { registrations } = loadApi()
@@ -98,38 +105,106 @@ test('factory 返回 { inject: ["slots"], apply }', () => {
   assert.strictEqual(typeof mod.apply, 'function')
 })
 
-test('apply 注册 plugins.bundle.config（key = 包名）与 settings.plugin.item（key = team-admin）', () => {
-  const { registrations } = loadApi()
-  const mod = createModule(registrations)
+// apply 的运行台：记录注入、注册与 effect 交付的清理器，供各断言复用
+function applyModule(module) {
   const injections = []
   const registered = []
+  const disposed = []
+  const effects = []
   const ctx = {
     slots: {
       inject(name, factory) {
         injections.push({ name, factory })
-        return () => {}
+        return () => disposed.push(name)
       },
       register(options, component) {
         registered.push({ options, component })
-        return () => {}
+        return () => disposed.push('register:' + String(options.key || options.id))
       },
     },
     effect(fn) {
-      return fn()
+      const disposer = fn()
+      effects.push(disposer)
+      return disposer
     },
   }
-  mod.apply(ctx)
-  assert.deepEqual(Array.from(injections, (entry) => entry.name), ['plugins.bundle.config', 'settings.plugin.item'])
-  injections[0].factory()
-  injections[1].factory()
-  assert.strictEqual(registered.length, 2)
-  assert.strictEqual(registered[0].options.name, 'plugins.bundle.config')
-  assert.strictEqual(registered[0].options.key, '@chenkai114/dsh-team-admin')
-  assert.strictEqual(registered[1].options.name, 'settings.plugin.item')
-  assert.strictEqual(registered[1].options.key, 'team-admin')
-  assert.strictEqual(registered[1].options.label, '智能体团队管理')
+  module.apply(ctx)
+  return { ctx, injections, registered, disposed, effects }
+}
+
+test('apply 注册 main + sidebar.panellist 全局面板入口，两者用同一 id 配对', () => {
+  const { registrations } = loadApi()
+  const { injections, registered, effects } = applyModule(createModule(registrations))
+
+  assert.deepEqual(Array.from(injections, (entry) => entry.name), [
+    'main',
+    'sidebar.panellist',
+    'plugins.bundle.config',
+    'settings.plugin.item',
+  ])
+  for (const entry of injections) assert.strictEqual(typeof entry.factory, 'function')
+  assert.strictEqual(effects.length, 3)
+
+  for (const entry of injections) entry.factory()
+  assert.strictEqual(registered.length, 4)
+
+  assert.deepEqual(JSON.parse(JSON.stringify(registered[0].options)), { name: 'main', key: 'team-admin' })
   assert.strictEqual(typeof registered[0].component, 'function')
-  assert.strictEqual(registered[0].component, registered[1].component)
+  assert.deepEqual(JSON.parse(JSON.stringify(registered[1].options)), {
+    name: 'sidebar.panellist',
+    id: 'team-admin',
+    order: 20,
+    label: '团队管理',
+  })
+  assert.strictEqual(typeof registered[1].component, 'function')
+  // 宿主按 id === main key 配对，两个组件必须是不同构件
+  assert.strictEqual(registered[1].options.id, registered[0].options.key)
+  assert.notStrictEqual(registered[1].component, registered[0].component)
+})
+
+test('apply 保留 plugins.bundle.config 与 settings.plugin.item 配置卡片', () => {
+  const { registrations } = loadApi()
+  const { injections, registered } = applyModule(createModule(registrations))
+  for (const entry of injections) entry.factory()
+
+  assert.strictEqual(registered[2].options.name, 'plugins.bundle.config')
+  assert.strictEqual(registered[2].options.key, '@chenkai114/dsh-team-admin')
+  assert.strictEqual(registered[3].options.name, 'settings.plugin.item')
+  assert.strictEqual(registered[3].options.key, 'team-admin')
+  assert.strictEqual(registered[3].options.label, '智能体团队管理')
+  assert.strictEqual(typeof registered[2].component, 'function')
+  assert.strictEqual(registered[2].component, registered[3].component)
+})
+
+test('全局面板入口的 effect 交付组合清理器，回收两个注入', () => {
+  const { registrations } = loadApi()
+  const { effects, disposed } = applyModule(createModule(registrations))
+  disposed.length = 0
+  const disposePanel = effects[0]
+  assert.strictEqual(typeof disposePanel, 'function')
+  disposePanel()
+  assert.deepEqual(disposed, ['main', 'sidebar.panellist'])
+})
+
+test('main 页面挂整页壳、侧栏图标按宿主 size 渲染', () => {
+  const { registrations } = loadApi()
+  // 这里需要真实的元素树，换成返回对象树的 createElement 桩
+  const tree = (type, props, ...children) => ({ type, props, children })
+  const mod = registrations[0].factory((specifier) => {
+    assert.strictEqual(specifier, 'react')
+    return { createElement: tree, useRef: () => ({ current: null }), useEffect: () => {} }
+  })
+  const { injections, registered } = applyModule(mod)
+  for (const entry of injections) entry.factory()
+
+  const page = registered[0].component({})
+  assert.strictEqual(page.type, 'div')
+  assert.strictEqual(page.props.className, 'ta-main')
+
+  const icon = registered[1].component({ size: 18, active: false })
+  assert.strictEqual(icon.type, 'svg')
+  assert.strictEqual(icon.props.width, 18)
+  assert.strictEqual(icon.props['aria-hidden'], 'true')
 })
 
 test('宿主缺 slots 服务时告警降级、不抛错', () => {

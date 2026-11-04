@@ -1,5 +1,6 @@
 (() => {
-  // dsh-team-admin client 半区：插件管理页（plugins.bundle.config）里的团队管理卡片。
+  // dsh-team-admin client 半区：全局面板入口（sidebar.panellist「团队管理」+ main 中央页面），
+  // 同时保留插件管理页（plugins.bundle.config）与设置页（settings.plugin.item）的配置卡片。
   // 经典 script：IIFE 书挡、零 import/export、无构建；按宿主模块表约定以包名注册 factory。
   //
   // 渲染只有一份实现：createPanelController 用原生 DOM 建树（测试/e2e 可直接 mount），
@@ -17,6 +18,10 @@
   const HOUR_MS = 60 * MINUTE_MS
   const DAY_MS = 24 * HOUR_MS
   const COPIED_RESET_MS = 1600
+
+  const PANEL_ID = 'team-admin'
+  const PANEL_LABEL = '团队管理'
+  const PANEL_ORDER = 20
 
   const CARD_TITLE = '智能体团队管理'
   const CARD_SUMMARY = '选择任意会话，查看团队成员并删除角色。'
@@ -99,6 +104,8 @@
 .ta-confirm__actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .ta-summary{font-size:12px;color:var(--ta-text-sub);line-height:1.5}
 .ta-host{display:block;min-width:0}
+.ta-main{flex:1;min-height:0;overflow:auto;padding:18px;background:var(--dsw-alias-bg-base)}
+.ta-main__inner{max-width:1080px;margin:0 auto;min-width:0}
 @media (max-width:760px){.ta-body{grid-template-columns:1fr}.ta-col--list{padding-right:0;padding-bottom:10px;border-right:0;border-bottom:1px solid var(--ta-border)}.ta-sessions{max-height:220px}}
 @media (prefers-reduced-motion:reduce){.ta-btn{transition:none}}
 `
@@ -879,6 +886,31 @@
       return view === 'summary' ? h('div', { className: 'ta-summary' }, CARD_SUMMARY) : h(TeamAdminPanel, null)
     }
 
+    // 侧栏入口图标：sidebar.panellist 渲染契约组件，宿主传 { size, active }
+    function TeamAdminIcon(props) {
+      const size = props !== null && props !== undefined && typeof props.size === 'number' ? props.size : 16
+      return h('svg', {
+        viewBox: '0 0 16 16',
+        width: size,
+        height: size,
+        fill: 'none',
+        stroke: 'currentColor',
+        strokeWidth: 1.3,
+        strokeLinecap: 'round',
+        strokeLinejoin: 'round',
+        'aria-hidden': 'true',
+      },
+      h('circle', { cx: 5.6, cy: 5.4, r: 2.2 }),
+      h('path', { d: 'M1.9 13.2c0-2 1.6-3.3 3.7-3.3s3.7 1.3 3.7 3.3' }),
+      h('circle', { cx: 11.3, cy: 6.2, r: 1.8 }),
+      h('path', { d: 'M9.7 12.4c.3-1.5 1.3-2.3 2.6-2.3 1.4 0 2.4 1 2.6 2.5' }))
+    }
+
+    // 中央面板页：整页壳 + 与配置卡同一份 controller（不复制 UI）
+    function TeamAdminPage() {
+      return h('div', { className: 'ta-main' }, h('div', { className: 'ta-main__inner' }, h(TeamAdminPanel, null)))
+    }
+
     return {
       inject: ['slots'],
       apply(ctx) {
@@ -894,6 +926,27 @@
               const disposer = fn()
               return typeof disposer === 'function' ? disposer : () => {}
             }
+        // 全局面板入口：main keyed 条目出中央页面，sidebar.panellist 条目出侧栏入口行；
+        // 两者用同一个 id 配对，点击入口由宿主 layout.selectPanel 切换。先注册 main，
+        // 侧栏行一旦可点就有页面可切（selectPanel 对未注册 key 会抛错）。
+        effect(() => {
+          const disposers = []
+          disposers.push(slots.inject('main', () => slots.register({
+            name: 'main',
+            key: PANEL_ID,
+          }, TeamAdminPage)))
+          disposers.push(slots.inject('sidebar.panellist', () => slots.register({
+            name: 'sidebar.panellist',
+            id: PANEL_ID,
+            order: PANEL_ORDER,
+            label: PANEL_LABEL,
+          }, TeamAdminIcon)))
+          return () => {
+            for (const dispose of disposers) {
+              if (typeof dispose === 'function') dispose()
+            }
+          }
+        }, 'team-admin: main + sidebar.panellist')
         effect(() => slots.inject('plugins.bundle.config', () => slots.register({
           name: 'plugins.bundle.config',
           key: PKG_ID,
@@ -914,6 +967,9 @@
       helpers: {
         PKG_ID: PKG_ID,
         SETTINGS_KEY: SETTINGS_KEY,
+        PANEL_ID: PANEL_ID,
+        PANEL_LABEL: PANEL_LABEL,
+        PANEL_ORDER: PANEL_ORDER,
         API_BASE: API_BASE,
         DEBOUNCE_MS: DEBOUNCE_MS,
         CARD_TITLE: CARD_TITLE,
