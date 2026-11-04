@@ -18,7 +18,7 @@ v0.2.x 的内置 Team roster 是 **append-only**：只能 `spawn_teammate` 加�
 dsh plugin --profile web add @chenkai114/dsh-team-admin
 ```
 
-重启 / 重载后，打开 **设置 → 插件 → dsh-team-admin**（或插件管理页里本包的配置卡），即可看到「智能体团队管理」面板。
+重载后左侧栏会出现 **团队管理** 入口（插件市场里本包的配置卡也保留）。
 
 未发布前用本地源码链接安装：
 
@@ -34,7 +34,13 @@ dsh plugin --profile web add link:/Users/chenkai2/data1/www/htdocs/dsh-team-admi
 }
 ```
 
-![团队管理卡片](docs/images/team-admin.png)
+左侧栏「团队管理」入口（0.1.1 起）：
+
+![侧栏入口](docs/images/sidebar-entry.png)
+
+打开后是完整管理面板，可直接对真实会话操作：
+
+![团队管理面板](docs/images/team-panel-real.png)
 
 ## 用法
 
