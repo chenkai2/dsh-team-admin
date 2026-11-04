@@ -20,7 +20,7 @@ const ROUTE_PREFIX = '/api/team-admin'
 /** 墓碑 id 缓存时长：过滤发生在每次会话列表响应上，短缓存足够。 */
 const DISMISSED_TTL_MS = 2000
 /** 与 package.json 版本保持一致（发布前由测试校验）。 */
-const PLUGIN_VERSION = '0.1.7'
+const PLUGIN_VERSION = '0.1.8'
 
 /**
  * 解析插件数据目录。
