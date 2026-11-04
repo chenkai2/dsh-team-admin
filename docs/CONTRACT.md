@@ -77,7 +77,7 @@ interface DismissedRow {
   dismissedAt: number
   sessionDeleted: boolean
   trashPath?: string
-  memberStillInRoster: boolean  // 内置 roster 仍保留该记录（宿主限制，恒 true）
+  memberStillInRoster: boolean  // 内置 roster 仍保留该记录（按实际折叠结果；roster 记录被压缩掉时可能为 false）
 }
 ```
 

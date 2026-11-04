@@ -9,8 +9,18 @@ const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, '..', '..')
 const scenarioOf = (url) => url.searchParams.get('scenario') || 'default'
 
+/** 读完整请求体（JSON 对象；非 JSON 当空对象）。 */
+async function readBody(req) {
+  if (req.method !== 'POST') return {}
+  const chunks = []
+  for await (const chunk of req) chunks.push(chunk)
+  const text = Buffer.concat(chunks).toString('utf8')
+  if (text.trim() === '') return {}
+  try { return JSON.parse(text) } catch { return {} }
+}
+
 /** 返回该 scenario 下的 JSON 响应。 */
-function respond(url, scenario) {
+function respond(url, scenario, body) {
   if (scenario === 'error') return { status: 500, body: { error: '操作失败（详见服务端日志）' } }
   const path = url.pathname
   if (path === '/api/team-admin/health') return { status: 200, body: { ok: true, name: 'team-admin', version: '0.1.0' } }
@@ -37,7 +47,11 @@ function respond(url, scenario) {
     }
     return { status: 200, body: team }
   }
-  if (path === '/api/team-admin/dismiss') return { status: 200, body: { ok: true, name: 'x', id: 'child-3', stopped: false, sessionDeleted: true, dismissedAt: Date.now() } }
+  if (path === '/api/team-admin/dismiss') {
+    const name = typeof body?.name === 'string' ? body.name : ''
+    const id = name === 'mine-migrator' ? 'child-3' : (name === 'wasm-researcher' ? 'child-1' : 'child-2')
+    return { status: 200, body: { ok: true, name, id, stopped: false, sessionDeleted: true, dismissedAt: Date.now() } }
+  }
   return { status: 404, body: { error: '接口不存在' } }
 }
 
@@ -59,9 +73,10 @@ export async function serve(port = 0) {
       res.end(await readFile(join(root, 'src', 'client.js')))
       return
     }
-    const { status, body } = respond(url, scenarioOf(url))
+    const body = await readBody(req)
+    const { status, body: payload } = respond(url, scenarioOf(url), body)
     res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' })
-    res.end(JSON.stringify(body))
+    res.end(JSON.stringify(payload))
   })
   await new Promise((resolve, reject) => {
     server.once('error', reject)

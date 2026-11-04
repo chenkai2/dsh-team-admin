@@ -65,6 +65,12 @@ const results = []
 try {
   for (const [scenario, expectations] of scenarios) {
     const page = await browser.newPage({ viewport: { width: 1180, height: 900 } })
+    // 页面 fetch 不带 scenario：在这里注入，保证四个场景真的拿到不同数据
+    await page.route('**/api/team-admin/**', async (route) => {
+      const url = new URL(route.request().url())
+      url.searchParams.set('scenario', scenario)
+      await route.continue({ url: url.toString() })
+    })
     const failures = []
     page.on('pageerror', error => failures.push(String(error)))
     await page.goto(server.url + '/?scenario=' + scenario, { waitUntil: 'domcontentloaded' })
