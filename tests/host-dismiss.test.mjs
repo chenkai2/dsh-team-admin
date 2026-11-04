@@ -100,11 +100,17 @@ async function fixture(t) {
     ['c1', { status: 'running', options: {} }],
   ])
   const interruptCalls = []
+  const drainCalls = []
+  const drainState = { handler: undefined }
   const subagents = {
     interrupt(id, authority) {
       interruptCalls.push({ id, authority })
       const agent = agents.get(id)
       if (agent !== undefined) agent.status = 'idle'
+    },
+    async drainChildren(parent, childIds) {
+      drainCalls.push({ parent, childIds })
+      if (drainState.handler !== undefined) await drainState.handler()
     },
   }
   const ctx = {
@@ -123,6 +129,11 @@ async function fixture(t) {
     persistence,
     agents,
     interruptCalls,
+    drainCalls,
+    setDrain(handler) {
+      drainState.handler = handler
+    },
+    subagents,
     ctx,
     store: await openStore({ dir: dataDir }),
   }
@@ -208,6 +219,67 @@ test('stops a running member, moves its session directory to trash and records a
     sessionDeleted: true,
     trashPath: expectedTrash,
   }])
+
+  // 移动成功后释放子会话的 Activation 注册（GUI 子智能体选择器不再残留该条目）
+  assert.equal(f.drainCalls.length, 1)
+  assert.equal(f.drainCalls[0].parent, f.agents.get('lead-1'))
+  assert.deepEqual(f.drainCalls[0].childIds, ['c1'])
+})
+
+test('a failing drain keeps the deletion and tombstone intact', async (t) => {
+  const f = await fixture(t)
+  f.setDrain(async () => {
+    throw new Error('drain exploded')
+  })
+  f.agents.get('c1').status = 'running'
+  const logged = []
+  const result = await dismissMember(
+    f.ctx,
+    { sessionId: 'lead-1', name: 'qa' },
+    { store: f.store, now: () => 5, logSystem: (line) => logged.push(line) },
+  )
+  assert.equal(result.sessionDeleted, true)
+  assert.equal(f.drainCalls.length, 1)
+  await assert.rejects(() => access(join(f.sessionsRoot, 'proj', 'c1')), { code: 'ENOENT' })
+  assert.deepEqual(await f.store.listDismissed('lead-1'), [{
+    id: 'c1',
+    name: 'qa',
+    dismissedAt: 5,
+    sessionDeleted: true,
+    trashPath: join(f.dataDir, 'trash', 'lead-1', 'c1-5'),
+  }])
+  assert.ok(logged.some((line) => line.includes('释放子会话激活')), 'drain failure must be logged')
+})
+
+test('drain is skipped when the host has no drainChildren method', async (t) => {
+  const f = await fixture(t)
+  f.agents.get('c1').status = 'idle'
+  const original = f.ctx.get
+  f.ctx.get = (name) => (name === 'subagents' ? {} : original(name))
+  const result = await dismissMember(f.ctx, { sessionId: 'lead-1', name: 'qa' }, { store: f.store, now: () => 6 })
+  assert.equal(result.sessionDeleted, true)
+  assert.equal(f.drainCalls.length, 0)
+})
+
+test('the idempotent repeat path does not drain again', async (t) => {
+  const f = await fixture(t)
+  f.agents.get('c1').status = 'idle'
+  await dismissMember(f.ctx, { sessionId: 'lead-1', name: 'qa' }, { store: f.store, now: () => 8 })
+  assert.equal(f.drainCalls.length, 1)
+  await dismissMember(f.ctx, { sessionId: 'lead-1', name: 'qa' }, { store: f.store, now: () => 9 })
+  assert.equal(f.drainCalls.length, 1)
+})
+
+test('no drain when the child session was never moved', async (t) => {
+  const f = await fixture(t)
+  f.agents.get('c1').status = 'idle'
+  const result = await dismissMember(
+    f.ctx,
+    { sessionId: 'lead-1', name: 'qa', deleteSession: false },
+    { store: f.store, now: () => 10 },
+  )
+  assert.equal(result.sessionDeleted, false)
+  assert.equal(f.drainCalls.length, 0)
 })
 
 test('dismissing twice is idempotent and does not move a second time', async (t) => {

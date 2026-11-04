@@ -148,7 +148,30 @@ async function stopMember(ctx, { leadSessionId, memberId, timeoutMs, logSystem }
 }
 
 /**
- * 删除一个团队成员：停会话 → 子会话目录进回收站 → 写墓碑。
+ * 释放一个子会话的 Activation 注册：宿主 GUI 的子智能体选择器按注册列表渲染，
+ * 只删会话文件不会摘掉该条目（点进去报 subagent/not-found）。
+ * 宿主没有该方法、Lead Agent 不在线或释放失败都只记日志——删除本身已经生效。
+ * @param {object} ctx - 宿主上下文。
+ * @param {{leadSessionId: string, memberId: string, logSystem: (line: string) => void}} request - 根会话、成员、日志函数。
+ * @returns {Promise<void>} 释放结束（失败已吞并记录）。
+ */
+async function releaseActivation(ctx, { leadSessionId, memberId, logSystem }) {
+  const subagents = service(ctx, 'subagents')
+  if (subagents === undefined || typeof subagents.drainChildren !== 'function') return
+  const leadAgent = liveAgent(ctx, leadSessionId)
+  if (leadAgent === undefined) {
+    logSystem('[team-admin] 无法释放 ' + memberId + ' 的子会话激活：Lead Agent 未加载')
+    return
+  }
+  try {
+    await subagents.drainChildren(leadAgent, [memberId])
+  } catch (error) {
+    logSystem('[team-admin] 释放子会话激活 ' + memberId + ' 失败：' + String(error?.message ?? error))
+  }
+}
+
+/**
+ * 删除一个团队成员：停会话 → 子会话目录进回收站 → 释放子会话激活 → 写墓碑。
  * @param {object} ctx - 宿主上下文（sessionPersistence / agents / subagents 均可选）。
  * @param {{sessionId: string, name: string, deleteSession?: boolean}} request - 根会话、成员名、是否清理子会话（默认 true）。
  * @param {{store?: object, now?: number|(() => number), logSystem?: (line: string) => void, interruptTimeoutMs?: number}} [options]
@@ -234,6 +257,9 @@ export async function dismissMember(ctx, request, options = {}) {
       }
     }
   }
+
+  // 移动成功后释放该子会话的 Activation 注册；失败只记日志，删除与墓碑照常。
+  if (sessionDeleted) await releaseActivation(ctx, { leadSessionId: sessionId, memberId, logSystem })
 
   const record = await store.record(sessionId, memberId, {
     name: isRecord(member) && typeof member.name === 'string' ? member.name : name,
