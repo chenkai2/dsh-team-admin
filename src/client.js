@@ -1081,6 +1081,10 @@
     }
   }
 
+  // 宿主模块表装载阶段就装好过滤器：客户端插件要等 slots 服务才 apply，
+  // 而会话列表请求可能更早发生，所以不能只在 apply 里装。
+  installSessionListFilter()
+
   // 宿主模块表：以包名注册，factory 返回 { inject, apply }
   if (typeof window !== 'undefined' && window !== null && window.__ModuleLoader__ !== undefined && window.__ModuleLoader__ !== null
     && typeof window.__ModuleLoader__.load === 'function') {

@@ -554,3 +554,17 @@ test('installSessionListFilter：只包装一次、只改 /api/session/list 响�
   assert.strictEqual(other.status, 200)
   assert.ok(calls.includes(api.DISMISSED_URL))
 })
+test('模块加载阶段就安装列表过滤器（早于 apply）', () => {
+  const registrations = []
+  const sandbox = {
+    console: { log() {}, warn() {}, error() {} },
+    window: {
+      __ModuleLoader__: { load: (registration) => registrations.push(registration) },
+      fetch: async () => ({ ok: true, json: async () => ({ ids: [] }) }),
+    },
+  }
+  runInNewContext(SOURCE, sandbox, { filename: 'src/client.js' })
+  assert.strictEqual(sandbox.window.__dshTeamAdminSessionListFilter__, true)
+  assert.match(String(sandbox.window.fetch), /teamAdminAwareFetch/)
+  assert.strictEqual(registrations.length, 1)
+})
