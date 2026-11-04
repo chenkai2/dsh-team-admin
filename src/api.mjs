@@ -79,7 +79,8 @@ export function createApi({ ctx, getStore, version, logSystem, services }) {
 
       if (path === '/api/team-admin/health') {
         if (method !== 'GET') { sendJson(res, 405, { error: '请求方法不支持' }); return }
-        sendJson(res, 200, { ok: true, name: 'team-admin', version })
+        const budget = typeof services.readRosterBudget === 'function' ? services.readRosterBudget() : null
+        sendJson(res, 200, { ok: true, name: 'team-admin', version, maxMembers: budget === null ? null : budget.maxMembers })
         return
       }
 

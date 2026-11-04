@@ -29,7 +29,7 @@ const UNARY_METHODS = ['list', 'projections']
 /** 流出口：control 基线携带全部投影，follow 携带单个会话的开场快照。 */
 const STREAM_METHODS = ['control', 'follow']
 /** 与 package.json 版本保持一致（发布前由测试校验）。 */
-const PLUGIN_VERSION = '0.2.0'
+const PLUGIN_VERSION = '0.2.1'
 
 /**
  * 解析插件数据目录。
@@ -44,7 +44,7 @@ export function resolveDataDir(env = process.env, home = homedir()) {
 }
 
 /**
- * 装配插件：惰性建 store，注册一条 prefix 路由，并给投影出口加过滤。
+ * 装配插件：惰性建 store，注册一条 prefix 路由；再给投影出口与成员名额加补丁。
  * @param {object} ctx - Cordis 插件上下文。
  */
 export function apply(ctx) {
@@ -62,6 +62,13 @@ export function apply(ctx) {
   const logSystem = (line) => {
     if (typeof ctx.logger?.warn === 'function') ctx.logger.warn(line)
   }
+  const ensureBudget = () => installRosterBudget(ctx, { getStore, logSystem, silent: true })
+  // 诊断用：读当前生效的成员上限（配置上限 + 已回收名额）。
+  const readRosterBudget = () => {
+    const service = typeof ctx.get === 'function' ? ctx.get('agentTeams') : undefined
+    const roster = service === null || service === undefined ? undefined : service.roster
+    return roster !== undefined && roster !== null && typeof roster.maxMembers === 'number' ? { maxMembers: roster.maxMembers } : null
+  }
   const handler = createApi({
     ctx,
     getStore,
@@ -73,13 +80,13 @@ export function apply(ctx) {
       dismissMember,
       // 删除成功后释放名额：名额外加数 = 墓碑数。
       onMemberDismissed: () => { void ensureBudget()?.() },
+      readRosterBudget,
     },
   })
   ctx.effect(
     () => ctx.webServer.register({ kind: 'prefix', path: ROUTE_PREFIX, handler }),
     'team-admin routes',
   )
-  const ensureBudget = () => installRosterBudget(ctx, { getStore, logSystem, silent: true })
   ensureBudget()
   if (typeof ctx.inject === 'function') {
     ctx.inject(['agentTeams'], (sub) => installRosterBudget(sub, { getStore, logSystem }))
@@ -89,7 +96,6 @@ export function apply(ctx) {
     ctx.inject(['sessionController'], (sub) => installSessionListFilter(sub, { getStore, logSystem }))
   }
 }
-
 /**
  * 建一个带短缓存的墓碑 id 读取器。
  * @param {() => Promise<object>} getStore - 惰性打开的状态存储。

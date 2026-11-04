@@ -65,7 +65,15 @@ test('health reports name and version', async () => {
   const res = makeRes()
   await api(makeReq({ url: '/api/team-admin/health' }), res)
   assert.equal(res.statusCode, 200)
-  assert.deepEqual(res.payload, { ok: true, name: 'team-admin', version: '0.1.0' })
+  assert.deepEqual(res.payload, { ok: true, name: 'team-admin', version: '0.1.0', maxMembers: null })
+})
+
+test('health reports the effective member limit when the host exposes it', async () => {
+  const api = createApi({ ...base, services: { ...base.services, readRosterBudget: () => ({ maxMembers: 9 }) } })
+  const res = makeRes()
+  await api(makeReq({ url: '/api/team-admin/health' }), res)
+  assert.equal(res.statusCode, 200)
+  assert.equal(res.payload.maxMembers, 9)
 })
 
 test('unknown path is 404 and wrong method is 405', async () => {
