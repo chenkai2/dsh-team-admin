@@ -65,7 +65,7 @@ test('health reports name and version', async () => {
   const res = makeRes()
   await api(makeReq({ url: '/api/team-admin/health' }), res)
   assert.equal(res.statusCode, 200)
-  assert.deepEqual(res.payload, { ok: true, name: 'team-admin', version: '0.1.0', maxMembers: null })
+  assert.deepEqual(res.payload, { ok: true, name: 'team-admin', version: '0.1.0', maxMembers: null, reclaimed: 0, teams: {} })
 })
 
 test('health reports the effective member limit when the host exposes it', async () => {

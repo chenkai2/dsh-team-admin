@@ -6,7 +6,8 @@ import { join } from 'node:path'
 
 import { createApi } from './api.mjs'
 import { dismissMember } from './dismiss.mjs'
-import { collectDismissedIds, stripDismissedMembers } from './filter.mjs'
+import { collectDismissedByTeam, collectDismissedIds, stripDismissedMembers } from './filter.mjs'
+import { createLegacyDecorator } from './legacy.mjs'
 import { openStore } from './store.mjs'
 import { listTeamSessions, readTeam } from './team-read.mjs'
 
@@ -21,15 +22,16 @@ const ROUTE_PREFIX = '/api/team-admin'
 const DISMISSED_TTL_MS = 2000
 /** 包装标记：apply 与延迟注入可能都执行一次，避免重复包装。 */
 const FILTER_MARK = Symbol.for('dsh.team-admin.projection-filter')
-/** roster 预算标记与刷新句柄：名额 = 配置上限 + 已删除成员数。 */
+/** roster 预算标记、刷新句柄与统计读取。 */
 const ROSTER_MARK = Symbol.for('dsh.team-admin.roster-budget')
 const ROSTER_REFRESH = Symbol.for('dsh.team-admin.roster-refresh')
+const ROSTER_STATS = Symbol.for('dsh.team-admin.roster-stats')
 /** 单值出口：一次请求/一次流的快照。 */
 const UNARY_METHODS = ['list', 'projections']
 /** 流出口：control 基线携带全部投影，follow 携带单个会话的开场快照。 */
 const STREAM_METHODS = ['control', 'follow']
 /** 与 package.json 版本保持一致（发布前由测试校验）。 */
-const PLUGIN_VERSION = '0.2.1'
+const PLUGIN_VERSION = '0.2.2'
 
 /**
  * 解析插件数据目录。
@@ -62,12 +64,15 @@ export function apply(ctx) {
   const logSystem = (line) => {
     if (typeof ctx.logger?.warn === 'function') ctx.logger.warn(line)
   }
+  const decorateList = createLegacyDecorator()
   const ensureBudget = () => installRosterBudget(ctx, { getStore, logSystem, silent: true })
-  // 诊断用：读当前生效的成员上限（配置上限 + 已回收名额）。
+  // 诊断用：读当前生效的成员上限与回收结果（按团队）。
   const readRosterBudget = () => {
     const service = typeof ctx.get === 'function' ? ctx.get('agentTeams') : undefined
     const roster = service === null || service === undefined ? undefined : service.roster
-    return roster !== undefined && roster !== null && typeof roster.maxMembers === 'number' ? { maxMembers: roster.maxMembers } : null
+    if (roster === undefined || roster === null) return null
+    if (typeof roster[ROSTER_STATS] === 'function') return roster[ROSTER_STATS]()
+    return typeof roster.maxMembers === 'number' ? { maxMembers: roster.maxMembers, reclaimed: 0, teams: {} } : null
   }
   const handler = createApi({
     ctx,
@@ -78,7 +83,7 @@ export function apply(ctx) {
       listTeamSessions,
       readTeam,
       dismissMember,
-      // 删除成功后释放名额：名额外加数 = 墓碑数。
+      // 删除成功后按团队重算名额。
       onMemberDismissed: () => { void ensureBudget()?.() },
       readRosterBudget,
     },
@@ -91,11 +96,12 @@ export function apply(ctx) {
   if (typeof ctx.inject === 'function') {
     ctx.inject(['agentTeams'], (sub) => installRosterBudget(sub, { getStore, logSystem }))
   }
-  if (!installSessionListFilter(ctx, { getStore, logSystem, silent: true }) && typeof ctx.inject === 'function') {
+  if (!installSessionListFilter(ctx, { getStore, logSystem, decorateList, silent: true }) && typeof ctx.inject === 'function') {
     // 插件可能早于 sessionController 注册；等服务可用后再包一次。
-    ctx.inject(['sessionController'], (sub) => installSessionListFilter(sub, { getStore, logSystem }))
+    ctx.inject(['sessionController'], (sub) => installSessionListFilter(sub, { getStore, logSystem, decorateList }))
   }
 }
+
 /**
  * 建一个带短缓存的墓碑 id 读取器。
  * @param {() => Promise<object>} getStore - 惰性打开的状态存储。
@@ -119,14 +125,14 @@ function createDismissedIds(getStore, logSystem) {
 }
 
 /**
- * 给宿主的 sessionController 出口包一层：把已删除成员从 subagentCatalog / agentTeam.members 里摘掉。
- * 顶部「子智能体」选择器读 `list` 与 `control` 基线，内置「智能体团队」面板读同一批投影，
- * 因此在宿主出口过滤一次即可覆盖所有客户端，不需要改宿主源码，也不用重编译。
+ * 给宿主的 sessionController 出口包一层：把已删除成员从 subagentCatalog / agentTeam.members 里摘掉，
+ * 并给老格式会话补标题/空白标记。顶部选择器与团队面板读 `list` 与 `control` 基线，
+ * 在宿主出口处理一次即可覆盖所有客户端，不需要改宿主源码，也不用重新编译。
  * @param {object} ctx - Cordis 插件上下文。
- * @param {{ getStore: () => Promise<object>, logSystem: (line: string) => void, silent?: boolean }} deps - 存储与日志。
+ * @param {{ getStore: () => Promise<object>, logSystem: (line: string) => void, decorateList?: (value: object) => object, silent?: boolean }} deps - 存储、日志与列表补全器。
  * @returns {boolean} 至少包上一个方法时返回 true。
  */
-export function installSessionListFilter(ctx, { getStore, logSystem, silent = false }) {
+export function installSessionListFilter(ctx, { getStore, logSystem, decorateList, silent = false }) {
   const get = ctx !== null && typeof ctx?.get === 'function' ? ctx.get.bind(ctx) : null
   const service = get === null ? undefined : get('sessionController')
   if (service === null || service === undefined) {
@@ -149,7 +155,8 @@ export function installSessionListFilter(ctx, { getStore, logSystem, silent = fa
     const original = service[method]
     if (typeof original !== 'function') continue
     service[method] = async function teamAdminFilteredUnary(...args) {
-      return await strip(await original.apply(this, args))
+      const value = await strip(await original.apply(this, args))
+      return method === 'list' && typeof decorateList === 'function' ? decorateList(value) : value
     }
     wrapped += 1
   }
@@ -170,11 +177,12 @@ export function installSessionListFilter(ctx, { getStore, logSystem, silent = fa
 }
 
 /**
- * 把「已删除成员」占掉的名额还给 roster：宿主用 roster 的 append-only 成员数判断 maxMembers，
- * 删除只写墓碑不删记录，所以这里把上限动态抬到 `配置上限 + 墓碑数`。
+ * 把「已删除成员」占掉的名额还给**它所在的那个团队**：宿主的 `TeamRoster.spawnAdmitted`
+ * 用 `journal.state(root).members.length >= this.maxMembers` 判断，roster 只有一个上限字段。
+ * 这里在每次 spawn 前按 caller 的 Lead 设置本次生效的额外名额，spawn 结束清零。
  * @param {object} ctx - Cordis 插件上下文。
  * @param {{ getStore: () => Promise<object>, logSystem: (line: string) => void, silent?: boolean }} deps - 存储与日志。
- * @returns {null | (() => Promise<number>)} 刷新预算的函数；宿主没有 agentTeams 时返回 null。
+ * @returns {null | (() => Promise<number>)} 刷新名额的函数；宿主没有 agentTeams 时返回 null。
  */
 export function installRosterBudget(ctx, { getStore, logSystem, silent = false }) {
   const get = ctx !== null && typeof ctx?.get === 'function' ? ctx.get.bind(ctx) : null
@@ -186,22 +194,45 @@ export function installRosterBudget(ctx, { getStore, logSystem, silent = false }
   }
   if (roster[ROSTER_MARK] === true) return roster[ROSTER_REFRESH]
   const base = roster.maxMembers
-  const budget = { extra: 0 }
+  const extras = new Map()
+  const live = { current: 0, total: 0 }
   Object.defineProperty(roster, 'maxMembers', {
     configurable: true,
     enumerable: true,
-    get: () => base + budget.extra,
+    get: () => base + live.current,
   })
-  roster[ROSTER_MARK] = true
-  roster[ROSTER_REFRESH] = async () => {
+  const originalSpawn = roster.spawn
+  if (typeof originalSpawn === 'function') {
+    roster.spawn = async function teamAdminScopedSpawn(caller, request) {
+      let extra = 0
+      try { extra = extras.get(this.membership(caller).root.id) ?? 0 } catch (error) { void error }
+      live.current = extra
+      try {
+        return await originalSpawn.call(this, caller, request)
+      } finally {
+        live.current = 0
+      }
+    }
+  }
+  const refresh = async () => {
     try {
       const store = await getStore()
-      budget.extra = collectDismissedIds(await store.readAll()).size
+      const teams = collectDismissedByTeam(await store.readAll())
+      extras.clear()
+      live.total = 0
+      for (const [leadId, ids] of teams) {
+        extras.set(leadId, ids.size)
+        live.total += ids.size
+      }
+      return live.total
     } catch (error) {
       logSystem(`team-admin：读取墓碑失败，名额不回收（${error instanceof Error ? error.message : String(error)}）`)
+      return 0
     }
-    return budget.extra
   }
-  void roster[ROSTER_REFRESH]()
-  return roster[ROSTER_REFRESH]
+  roster[ROSTER_MARK] = true
+  roster[ROSTER_REFRESH] = refresh
+  roster[ROSTER_STATS] = () => ({ maxMembers: base, reclaimed: live.total, teams: Object.fromEntries(extras) })
+  void refresh()
+  return refresh
 }

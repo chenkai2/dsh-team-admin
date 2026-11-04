@@ -63,3 +63,20 @@ export function collectDismissedIds(state) {
   }
   return ids
 }
+/**
+ * 按 Lead 会话分组收集已删除成员 id。
+ * @param {object|null} state - store.readAll() 的返回值。
+ * @returns {Map<string, Set<string>>} lead 会话 id → 该团队已删除成员 id。
+ */
+export function collectDismissedByTeam(state) {
+  const teams = new Map()
+  const buckets = state !== null && typeof state === 'object' && state.dismissed !== null && typeof state.dismissed === 'object'
+    ? state.dismissed
+    : {}
+  for (const [leadId, bucket] of Object.entries(buckets)) {
+    if (bucket === null || typeof bucket !== 'object') continue
+    const ids = new Set(Object.keys(bucket))
+    if (ids.size > 0) teams.set(leadId, ids)
+  }
+  return teams
+}
