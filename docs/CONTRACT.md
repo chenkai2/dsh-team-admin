@@ -137,7 +137,15 @@ body `{ "sessionId": string, "name": string, "deleteSession"?: boolean }`（`del
 
 ## 客户端契约（src/client.js）
 
-- 形态：经典 script IIFE（`(() => { ... })()`），无 import/构建；参考 `~/.dsh/profiles/web/node_modules/@mzzsfy/dsh-cron-board/src/client.js`。
+- 形态：经典 script IIFE，无 import/构建；**必须**用宿主模块装载器注册（照抄 abort-polyfill / cron-board）：
+  ```js
+  if (typeof window !== 'undefined' && window.__ModuleLoader__) {
+    window.__ModuleLoader__.load({ id: '@chenkai114/dsh-team-admin', factory })
+  }
+  function factory(require) { /* ... */ return { inject: ['slots'], apply(ctx) { /* 注册槽位 */ } } }
+  ```
+  参考 `/Users/chenkai2/data1/www/htdocs/dsh-abort-polyfill/lib/client.js`（最小形态）与
+  `~/.dsh/profiles/web/node_modules/@mzzsfy/dsh-cron-board/src/client.js`（IIFE + factory(require) + slots 注册）。
 - 注册两处（都指向同一组件工厂）：
   1. `plugins.bundle.config`，`key === '@chenkai114/dsh-team-admin'`
   2. `settings.plugin.item`，`key === 'team-admin'`（若该槽需要 settings 命名空间才生效，就只保留第 1 处并在 README 说明）
