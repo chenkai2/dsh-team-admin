@@ -1,0 +1,77 @@
+name: publish
+
+# 发布走 npm Trusted Publishing（OIDC）：不需要 NPM_TOKEN，也不需要交互式 2FA。
+# npm 侧一次性设置：包页面 → Settings → Trusted Publisher → GitHub Actions
+#   Organization/User: chenkai2   Repository: dsh-team-admin
+#   Workflow filename: publish.yml   Environment: npm-publish
+on:
+  release:
+    types: [published]        # 推荐入口：发 GitHub Release（tag 名即版本号 vX.Y.Z）
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 只做干跑（npm publish --dry-run），不真正发布
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write             # ★ 唯一凭据来源：向 GitHub 申请 OIDC 短期令牌
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: npm-publish  # 与 npm 侧 Trusted Publisher 里填的 environment 一致
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          # 刻意不写 registry-url / NODE_AUTH_TOKEN：
+          # registry 由仓库 .npmrc 指定；写 registry-url 会留下空 _authToken 占位，
+          # 可能把 npm 从 OIDC 引到 token 路径。
+      - name: npm CLI 需支持 trusted publishing（≥ 11.5.1）
+        run: npm install -g npm@latest
+
+      - name: 环境自检（node/npm 版本 + OIDC 是否可用）
+        run: |
+          node -v
+          echo "npm: $(npm -v)"
+          echo "ACTIONS_ID_TOKEN_REQUEST_URL 存在: $([ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] && echo yes || echo no)"
+          v="$(npm -v)"; maj="${v%%.*}"; rest="${v#*.}"; min="${rest%%.*}"
+          if [ "$maj" -lt 11 ] || { [ "$maj" -eq 11 ] && [ "$min" -lt 5 ]; }; then
+            echo "::error::npm $v 太旧：trusted publishing 需要 >= 11.5.1"; exit 1
+          fi
+
+      - name: tag 与 package.json 版本必须一致
+        run: |
+          v="$(node -p "require('./package.json').version")"
+          echo "package.json version = $v, ref = ${GITHUB_REF}"
+          case "${GITHUB_REF}" in
+            refs/tags/*)
+              if [ "v$v" != "${GITHUB_REF_NAME}" ]; then
+                echo "::error::tag ${GITHUB_REF_NAME} 与 package.json v$v 不一致"; exit 1
+              fi ;;
+            *)
+              echo "非 tag 触发（${GITHUB_REF_NAME}）：跳过 tag 校验，按 package.json v$v 处理" ;;
+          esac
+
+      - name: 版本一致性自检（src/index.js 的 PLUGIN_VERSION 必须等于 package.json）
+        run: |
+          node -e "const p=require('./package.json');const f=require('fs').readFileSync('src/index.js','utf8');const m=f.match(/PLUGIN_VERSION = '([^']+)'/);if(!m||m[1]!==p.version){console.error('PLUGIN_VERSION 与 package.json 不一致');process.exit(1)}"
+
+      - name: 测试（纯 node:test，无第三方依赖）
+        run: npm test
+
+      - name: 发布（scoped 包，access public）
+        run: |
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            echo "dry run：只检查将要发布的产物"
+            npm publish --dry-run
+          else
+            npm publish --provenance --access public
+          fi

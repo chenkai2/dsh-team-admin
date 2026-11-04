@@ -1,0 +1,6 @@
+# dsh-team-admin 打包补丁：把团队管理插件作为单条目注入 profile 根。
+# 宿主半区提供 /api/team-admin/* 路由；client 半区随宿主条目进入客户端模块表，
+# 在「插件管理 → 本包」页渲染管理卡片。
+- insert:
+    - id: team-admin
+      name: '@chenkai114/dsh-team-admin'
