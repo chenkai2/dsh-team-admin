@@ -17,7 +17,7 @@ const DATA_DIR_ENV = 'DSH_TEAM_ADMIN_DATA_DIR'
 /** 路由前缀：webServer 只支持 exact/prefix 注册。 */
 const ROUTE_PREFIX = '/api/team-admin'
 /** 与 package.json 版本保持一致（发布前由测试校验）。 */
-const PLUGIN_VERSION = '0.1.3'
+const PLUGIN_VERSION = '0.1.4'
 
 /**
  * 解析插件数据目录。
