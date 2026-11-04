@@ -20,11 +20,21 @@ dsh plugin --profile web add @chenkai114/dsh-team-admin
 
 重启 / 重载后，打开 **设置 → 插件 → dsh-team-admin**（或插件管理页里本包的配置卡），即可看到「智能体团队管理」面板。
 
-本地开发（源码目录直接挂载）：
+未发布前用本地源码链接安装：
 
 ```sh
-dsh plugin --profile web add /Users/chenkai2/data1/www/htdocs/dsh-team-admin
+dsh plugin --profile web add link:/Users/chenkai2/data1/www/htdocs/dsh-team-admin
 ```
+
+或在 profile 的 `package.json` 里手动加：
+```json
+{
+  "dependencies": { "@chenkai114/dsh-team-admin": "link:/Users/chenkai2/data1/www/htdocs/dsh-team-admin" },
+  "dsh": { "profile": { "bundles": ["...", "@chenkai114/dsh-team-admin"] } }
+}
+```
+
+![团队管理卡片](docs/images/team-admin.png)
 
 ## 用法
 

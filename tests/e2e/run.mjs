@@ -8,26 +8,35 @@ import { serve } from './serve.mjs'
 const here = dirname(fileURLToPath(import.meta.url))
 const out = join(here, 'out')
 
-/** 动态解析 playwright：优先本仓，其次全局安装目录。 */
+/** 解析 playwright：向上找 node_modules，其次 npm 全局目录。 */
 async function loadChromium() {
+  const { createRequire } = await import('node:module')
   const { execSync } = await import('node:child_process')
-  const candidates = ['playwright']
-  try {
-    candidates.push(join(execSync('npm root -g', { encoding: 'utf8' }).trim(), 'playwright'))
-  } catch {
-    // 没有 npm 就只试本仓依赖
+  const { existsSync } = await import('node:fs')
+  const attempts = []
+  let dir = here
+  for (let i = 0; i < 8; i += 1) {
+    const candidate = join(dir, 'node_modules', 'playwright')
+    if (existsSync(candidate)) attempts.push(candidate)
+    const parent = dirname(dir)
+    if (parent === dir) break
+    dir = parent
   }
-  for (const candidate of candidates) {
+  try {
+    attempts.push(join(execSync('npm root -g', { encoding: 'utf8' }).trim(), 'playwright'))
+  } catch {
+    // 没有 npm 全局目录就只试本地候选
+  }
+  for (const candidate of attempts) {
     try {
-      const module = await import(candidate)
-      return module.chromium
+      const module = createRequire(join(candidate, 'package.json'))(candidate)
+      if (module && module.chromium) return module.chromium
     } catch {
       // 继续下一个候选
     }
   }
   throw new Error('未找到 playwright；请先安装（npm i -D playwright && npx playwright install chromium）')
 }
-
 const scenarios = [
   ['default', ['智能体团队管理', 'wasm-researcher', 'trial-runner', '删除']],
   ['dismissed', ['已删除', '回收站']],
@@ -38,7 +47,20 @@ const scenarios = [
 const chromium = await loadChromium()
 await mkdir(out, { recursive: true })
 const server = await serve(0)
-const browser = await chromium.launch()
+/** 依次尝试：自带 chromium → 系统 Chrome channel → Chrome 可执行文件。 */
+async function launchBrowser() {
+  const attempts = [
+    () => chromium.launch(),
+    () => chromium.launch({ channel: 'chrome' }),
+    () => chromium.launch({ executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' }),
+  ]
+  let lastError
+  for (const attempt of attempts) {
+    try { return await attempt() } catch (error) { lastError = error }
+  }
+  throw lastError
+}
+const browser = await launchBrowser()
 const results = []
 try {
   for (const [scenario, expectations] of scenarios) {

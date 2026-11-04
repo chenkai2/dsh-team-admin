@@ -4,15 +4,15 @@
 <meta charset="utf-8" />
 <title>dsh-team-admin e2e harness</title>
 <style>
-  :root { color-scheme: light dark; --dsw-surface: #ffffff; --dsw-text: #1f2328; --dsw-border: #d8dee4; }
+  :root { color-scheme: light; }
   body { margin: 0; padding: 24px; background: #f6f8fa; font: 14px/1.5 system-ui, -apple-system, "PingFang SC", sans-serif; color: #1f2328; }
-  #root { max-width: 880px; margin: 0 auto; background: #fff; border: 1px solid #d8dee4; border-radius: 10px; padding: 20px; }
+  #root { max-width: 960px; margin: 0 auto; background: #fff; border: 1px solid #d8dee4; border-radius: 10px; padding: 20px; }
 </style>
 </head>
 <body>
 <div id="root"></div>
 <script>
-  // 后台返回的假数据由 serve.mjs 的 /__scenario 提供；这里只做装载器与测试开关。
+  // 假宿主：只提供 client.js 需要的两件事 —— __ModuleLoader__ 与测试开关。
   const params = new URLSearchParams(location.search)
   globalThis.__DshTeamAdminTestEnabled = true
   globalThis.__teamAdminScenario = params.get('scenario') || 'default'
@@ -23,20 +23,47 @@
 </script>
 <script src="/__plugin/client.js"></script>
 <script>
+  // 两种渲染路径：优先插件提供的 __DshTeamAdminTest.mount();否则用假 slots 走 apply 后渲染注册的组件。
+  function mountViaFakeSlots(entry, container) {
+    const mod = entry.factory()
+    const registrations = []
+    const slots = {
+      inject(name, callback) { callback(); return () => {} },
+      register(options, Component) { registrations.push({ options, Component }); return () => {} },
+    }
+    const ctx = {
+      slots,
+      effect(fn) { const disposer = fn(); return typeof disposer === 'function' ? disposer : () => {} },
+      get() { return undefined },
+      logger: { warn() {}, info() {} },
+      locale: { register() {} },
+    }
+    mod.apply(ctx)
+    const target = registrations.find(row => row.options && row.options.name === 'plugins.bundle.config') || registrations[0]
+    if (!target || typeof target.Component !== 'function') throw new Error('client 未注册任何槽位组件')
+    const node = target.Component({})
+    if (!node || typeof node !== 'object' || node.nodeType === undefined) throw new Error('槽位组件没有返回 DOM 节点')
+    container.appendChild(node)
+  }
+
   window.addEventListener('load', async () => {
+    const container = document.getElementById('root')
     try {
       const entry = globalThis.__ModuleLoader__.loaded[0]
       if (!entry) throw new Error('client.js 未通过 __ModuleLoader__ 注册')
       const api = globalThis.__DshTeamAdminTest
-      if (!api || typeof api.mount !== 'function') throw new Error('缺少 __DshTeamAdminTest.mount')
-      await api.mount(document.getElementById('root'))
+      if (api && typeof api.mount === 'function') {
+        await api.mount(container)
+      } else {
+        mountViaFakeSlots(entry, container)
+      }
       globalThis.__harnessReady = true
     } catch (error) {
-      globalThis.__harnessError = String(error && error.stack || error)
+      globalThis.__harnessError = String((error && error.stack) || error)
       const pre = document.createElement('pre')
       pre.id = 'harness-error'
       pre.textContent = globalThis.__harnessError
-      document.getElementById('root').appendChild(pre)
+      container.appendChild(pre)
     }
   })
 </script>

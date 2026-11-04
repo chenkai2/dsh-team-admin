@@ -50,6 +50,9 @@
     "node": ">=22"
   },
   "scripts": {
-    "test": "node --test tests/"
+    "test": "node --test tests/*.test.mjs",
+    "test:e2e": "node tests/e2e/run.mjs",
+    "test:real": "node tests/e2e/real-data.mjs",
+    "test:pack": "npm pack --dry-run"
   }
 }
