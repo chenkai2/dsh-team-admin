@@ -50,7 +50,7 @@ test('installSessionListFilter：没有 sessionController 时只记日志', () =
   const logs = []
   const ok = installSessionListFilter({ get: () => undefined }, { getStore: async () => ({}), logSystem: (line) => logs.push(line) })
   assert.strictEqual(ok, false)
-  assert.match(logs[0], /未找到 sessionController\.list/)
+  assert.match(logs[0], /未找到 sessionController/)
 })
 
 test('installSessionListFilter：墓碑读取失败时放行原始列表并记日志', async () => {
@@ -63,4 +63,33 @@ test('installSessionListFilter：墓碑读取失败时放行原始列表并记�
   const value = await service.list({}, undefined)
   assert.strictEqual(value.items[0].projections.values.subagentCatalog.length, 2)
   assert.match(logs[0], /读取墓碑失败/)
+})
+test('installSessionListFilter：control 流里的基线投影也被过滤', async () => {
+  const baseline = {
+    type: 'baseline',
+    value: { projections: { 'session-lead': { subagentCatalog: [{ id: 'm1' }, { id: 'm2' }] } } },
+  }
+  const service = {
+    list: async () => ({ items: [] }),
+    control: async function* () {
+      yield baseline
+      yield { type: 'projection', sessionId: 'session-lead', key: 'agentTeam', value: { members: [{ id: 'm1' }, { id: 'm2' }] } }
+    },
+  }
+  assert.strictEqual(installSessionListFilter({ get: () => service }, {
+    getStore: async () => ({ readAll: async () => ({ dismissed: { lead1: { m1: {} } } }) }),
+    logSystem: () => {},
+  }), true)
+  const frames = []
+  for await (const frame of service.control(new AbortController().signal)) frames.push(frame)
+  assert.deepStrictEqual(frames[0].value.projections['session-lead'].subagentCatalog, [{ id: 'm2' }])
+  assert.deepStrictEqual(frames[1].value.members, [{ id: 'm2' }])
+})
+
+test('installSessionListFilter：重复安装不会二次包装', () => {
+  const service = { list: async () => ({ items: [] }) }
+  const ctx = { get: () => service }
+  const deps = { getStore: async () => ({ readAll: async () => ({ dismissed: { lead: { m1: {} } } }) }), logSystem: () => {} }
+  assert.strictEqual(installSessionListFilter(ctx, deps), true)
+  assert.strictEqual(installSessionListFilter(ctx, deps), false)
 })

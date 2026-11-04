@@ -5,8 +5,8 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 import { createApi } from './api.mjs'
-import { collectDismissedIds, stripDismissedMembers } from './filter.mjs'
 import { dismissMember } from './dismiss.mjs'
+import { collectDismissedIds, stripDismissedMembers } from './filter.mjs'
 import { openStore } from './store.mjs'
 import { listTeamSessions, readTeam } from './team-read.mjs'
 
@@ -17,10 +17,16 @@ export const inject = ['webServer']
 const DATA_DIR_ENV = 'DSH_TEAM_ADMIN_DATA_DIR'
 /** 路由前缀：webServer 只支持 exact/prefix 注册。 */
 const ROUTE_PREFIX = '/api/team-admin'
-/** 墓碑 id 缓存时长：过滤发生在每次会话列表响应上，短缓存足够。 */
+/** 墓碑 id 缓存时长：过滤发生在每次投影响应/帧上，短缓存足够。 */
 const DISMISSED_TTL_MS = 2000
+/** 包装标记：apply 与延迟注入可能都执行一次，避免重复包装。 */
+const FILTER_MARK = Symbol.for('dsh.team-admin.projection-filter')
+/** 单值出口：一次请求/一次流的快照。 */
+const UNARY_METHODS = ['list', 'projections']
+/** 流出口：control 基线携带全部投影，follow 携带单个会话的开场快照。 */
+const STREAM_METHODS = ['control', 'follow']
 /** 与 package.json 版本保持一致（发布前由测试校验）。 */
-const PLUGIN_VERSION = '0.1.8'
+const PLUGIN_VERSION = '0.1.9'
 
 /**
  * 解析插件数据目录。
@@ -35,7 +41,7 @@ export function resolveDataDir(env = process.env, home = homedir()) {
 }
 
 /**
- * 装配插件：惰性建 store，注册一条 prefix 路由。
+ * 装配插件：惰性建 store，注册一条 prefix 路由，并给投影出口加过滤。
  * @param {object} ctx - Cordis 插件上下文。
  */
 export function apply(ctx) {
@@ -71,43 +77,74 @@ export function apply(ctx) {
 }
 
 /**
- * 给宿主的 sessionController.list 包一层：把已删除成员从 subagentCatalog / agentTeam.members 里摘掉。
- * 顶部「子智能体」选择器与内置「智能体团队」面板都读这份响应，在源头过滤一次即可覆盖所有客户端，
- * 不需要改宿主源码，也不用重编译。
- * @param {object} ctx - Cordis 插件上下文。
- * @param {{ getStore: () => Promise<object>, logSystem: (line: string) => void }} deps - 数据目录与日志。
- * @returns {boolean} 成功包上返回 true；宿主没有该服务时返回 false。
+ * 建一个带短缓存的墓碑 id 读取器。
+ * @param {() => Promise<object>} getStore - 惰性打开的状态存储。
+ * @param {(line: string) => void} logSystem - 系统日志。
+ * @returns {() => Promise<Set<string>>} 读取已删除成员 id。
  */
-export function installSessionListFilter(ctx, { getStore, logSystem, silent = false }) {
-  const get = ctx !== null && typeof ctx?.get === 'function' ? ctx.get.bind(ctx) : null
-  const service = get === null ? undefined : get('sessionController')
-  if (service === null || service === undefined || typeof service.list !== 'function') {
-    if (silent !== true) logSystem('team-admin：未找到 sessionController.list，跳过会话列表过滤')
-    return false
-  }
-  const original = service.list
+function createDismissedIds(getStore, logSystem) {
   let cached = { at: 0, ids: new Set() }
-  const dismissedIds = async () => {
+  return async () => {
     if (Date.now() - cached.at < DISMISSED_TTL_MS) return cached.ids
     let ids = new Set()
     try {
       const store = await getStore()
       ids = collectDismissedIds(await store.readAll())
     } catch (error) {
-      logSystem(`team-admin：读取墓碑失败，本次不过滤会话列表（${error instanceof Error ? error.message : String(error)}）`)
+      logSystem(`team-admin：读取墓碑失败，本次不过滤投影（${error instanceof Error ? error.message : String(error)}）`)
     }
     cached = { at: Date.now(), ids }
     return ids
   }
-  service.list = async function teamAdminFilteredList(request, signal) {
-    const value = await original.call(this, request, signal)
+}
+
+/**
+ * 给宿主的 sessionController 出口包一层：把已删除成员从 subagentCatalog / agentTeam.members 里摘掉。
+ * 顶部「子智能体」选择器读 `list` 与 `control` 基线，内置「智能体团队」面板读同一批投影，
+ * 因此在宿主出口过滤一次即可覆盖所有客户端，不需要改宿主源码，也不用重编译。
+ * @param {object} ctx - Cordis 插件上下文。
+ * @param {{ getStore: () => Promise<object>, logSystem: (line: string) => void, silent?: boolean }} deps - 存储与日志。
+ * @returns {boolean} 至少包上一个方法时返回 true。
+ */
+export function installSessionListFilter(ctx, { getStore, logSystem, silent = false }) {
+  const get = ctx !== null && typeof ctx?.get === 'function' ? ctx.get.bind(ctx) : null
+  const service = get === null ? undefined : get('sessionController')
+  if (service === null || service === undefined) {
+    if (silent !== true) logSystem('team-admin：未找到 sessionController，跳过投影过滤')
+    return false
+  }
+  if (service[FILTER_MARK] === true) return false
+  const dismissedIds = createDismissedIds(getStore, logSystem)
+  const strip = async (value) => {
     try {
       const ids = await dismissedIds()
-      return ids.size === 0 ? value : stripDismissedMembers(value, ids)
+      return ids.size === 0 ? value : stripDismissedMembers(value, ids, 10)
     } catch (error) {
-      logSystem(`team-admin：过滤会话列表失败（${error instanceof Error ? error.message : String(error)}）`)
+      logSystem(`team-admin：过滤投影失败（${error instanceof Error ? error.message : String(error)}）`)
       return value
     }
   }
+  let wrapped = 0
+  for (const method of UNARY_METHODS) {
+    const original = service[method]
+    if (typeof original !== 'function') continue
+    service[method] = async function teamAdminFilteredUnary(...args) {
+      return await strip(await original.apply(this, args))
+    }
+    wrapped += 1
+  }
+  for (const method of STREAM_METHODS) {
+    const original = service[method]
+    if (typeof original !== 'function') continue
+    service[method] = async function* teamAdminFilteredStream(...args) {
+      for await (const frame of original.apply(this, args)) yield await strip(frame)
+    }
+    wrapped += 1
+  }
+  if (wrapped === 0) {
+    if (silent !== true) logSystem('team-admin：sessionController 上没有可过滤的方法，跳过投影过滤')
+    return false
+  }
+  service[FILTER_MARK] = true
   return true
 }

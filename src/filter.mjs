@@ -31,6 +31,13 @@ export function stripDismissedMembers(payload, dismissed, maxDepth = 6) {
     if (node.agentTeam !== null && typeof node.agentTeam === 'object' && Array.isArray(node.agentTeam.members)) {
       node.agentTeam.members = node.agentTeam.members.filter((entry) => !isDismissed(entry, dismissed))
     }
+    // 投影帧形如 { key: 'agentTeam', value: { members } } / { key: 'subagentCatalog', value: [...] }
+    if (node.key === 'agentTeam' && node.value !== null && typeof node.value === 'object' && Array.isArray(node.value.members)) {
+      node.value.members = node.value.members.filter((entry) => !isDismissed(entry, dismissed))
+    }
+    if (node.key === 'subagentCatalog' && Array.isArray(node.value)) {
+      node.value = node.value.filter((entry) => !isDismissed(entry, dismissed))
+    }
     for (const key of Object.keys(node)) {
       if (key === 'subagentCatalog' || key === 'agentTeam') continue
       visit(node[key], depth + 1)
