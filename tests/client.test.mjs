@@ -485,3 +485,26 @@ test('ensureStyle 只注入一次，且用宿主令牌而非硬编码颜色', ()
   assert.match(style.textContent, /var\(--dsw-alias-label-primary/)
   assert.match(style.textContent, /\.ta-root/)
 })
+
+test('整页面板撑满：卡片与左右两栏一路 flex:1，列表不再固定高度封顶', () => {
+  const { sandbox } = loadApi()
+  const style = { id: '', textContent: '', setAttribute(name, value) { this[name] = value } }
+  const appended = []
+  const doc = {
+    head: { appendChild: (node) => appended.push(node) },
+    getElementById: () => (appended.length === 0 ? null : appended[0]),
+    createElement: () => style,
+  }
+  sandbox.__DshTeamAdminTest.ensureStyle(doc)
+  // 外层 main 壳自身是 flex 列容器，不靠内容撑高
+  assert.match(style.textContent, /\.ta-main\{display:flex;flex-direction:column;flex:1;min-height:0/)
+  assert.match(style.textContent, /\.ta-main__inner\{display:flex;flex-direction:column;flex:1;min-height:0;width:100%/)
+  // 宽度不再被 max-width 收窄（用户要求占满）
+  assert.doesNotMatch(style.textContent, /\.ta-main__inner\{[^}]*max-width/)
+  // 卡片、两栏、会话列表逐级撑满，列表靠内部滚动而不是 max-height
+  assert.match(style.textContent, /\.ta-main \.ta-root\{flex:1;min-height:0\}/)
+  assert.match(style.textContent, /\.ta-main \.ta-body\{[^}]*flex:1;min-height:0/)
+  assert.match(style.textContent, /\.ta-main \.ta-sessions\{[^}]*max-height:none/)
+  // 小屏断点仍在
+  assert.match(style.textContent, /@media \(max-width:760px\)/)
+})

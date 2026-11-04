@@ -104,9 +104,17 @@
 .ta-confirm__actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .ta-summary{font-size:12px;color:var(--ta-text-sub);line-height:1.5}
 .ta-host{display:block;min-width:0}
-.ta-main{flex:1;min-height:0;overflow:auto;padding:18px;background:var(--dsw-alias-bg-base)}
-.ta-main__inner{max-width:1080px;margin:0 auto;min-width:0}
-@media (max-width:760px){.ta-body{grid-template-columns:1fr}.ta-col--list{padding-right:0;padding-bottom:10px;border-right:0;border-bottom:1px solid var(--ta-border)}.ta-sessions{max-height:220px}}
+/* 整页面板：宿主 main 槽是 flex column，这里把卡片与左右两栏一路撑满，滚动只发生在内部列表 */
+.ta-main{display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden;padding:18px;background:var(--dsw-alias-bg-base)}
+.ta-main__inner{display:flex;flex-direction:column;flex:1;min-height:0;width:100%;min-width:0}
+.ta-main .ta-host{display:flex;flex-direction:column;flex:1;min-height:0}
+.ta-main .ta-root{flex:1;min-height:0}
+.ta-main .ta-body{flex:1;min-height:0;grid-template-rows:minmax(0,1fr);align-items:stretch}
+.ta-main .ta-col{min-height:0}
+.ta-main .ta-list-host{display:flex;flex-direction:column;flex:1;min-height:0}
+.ta-main .ta-sessions{flex:1;min-height:0;max-height:none}
+.ta-main .ta-col--detail{overflow:auto;padding-right:2px}
+@media (max-width:760px){.ta-body{grid-template-columns:1fr}.ta-col--list{padding-right:0;padding-bottom:10px;border-right:0;border-bottom:1px solid var(--ta-border)}.ta-sessions{max-height:220px}.ta-main .ta-body{grid-template-rows:minmax(0,1fr) minmax(0,1fr)}}
 @media (prefers-reduced-motion:reduce){.ta-btn{transition:none}}
 `
 
