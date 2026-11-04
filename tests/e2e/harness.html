@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>dsh-team-admin e2e harness</title>
+<style>
+  :root { color-scheme: light dark; --dsw-surface: #ffffff; --dsw-text: #1f2328; --dsw-border: #d8dee4; }
+  body { margin: 0; padding: 24px; background: #f6f8fa; font: 14px/1.5 system-ui, -apple-system, "PingFang SC", sans-serif; color: #1f2328; }
+  #root { max-width: 880px; margin: 0 auto; background: #fff; border: 1px solid #d8dee4; border-radius: 10px; padding: 20px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+  // 后台返回的假数据由 serve.mjs 的 /__scenario 提供；这里只做装载器与测试开关。
+  const params = new URLSearchParams(location.search)
+  globalThis.__DshTeamAdminTestEnabled = true
+  globalThis.__teamAdminScenario = params.get('scenario') || 'default'
+  globalThis.__ModuleLoader__ = {
+    loaded: [],
+    load({ id, factory }) { globalThis.__ModuleLoader__.loaded.push({ id, factory }) },
+  }
+</script>
+<script src="/__plugin/client.js"></script>
+<script>
+  window.addEventListener('load', async () => {
+    try {
+      const entry = globalThis.__ModuleLoader__.loaded[0]
+      if (!entry) throw new Error('client.js 未通过 __ModuleLoader__ 注册')
+      const api = globalThis.__DshTeamAdminTest
+      if (!api || typeof api.mount !== 'function') throw new Error('缺少 __DshTeamAdminTest.mount')
+      await api.mount(document.getElementById('root'))
+      globalThis.__harnessReady = true
+    } catch (error) {
+      globalThis.__harnessError = String(error && error.stack || error)
+      const pre = document.createElement('pre')
+      pre.id = 'harness-error'
+      pre.textContent = globalThis.__harnessError
+      document.getElementById('root').appendChild(pre)
+    }
+  })
+</script>
+</body>
+</html>
