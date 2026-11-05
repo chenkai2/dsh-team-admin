@@ -31,7 +31,7 @@ const UNARY_METHODS = ['list', 'projections']
 /** 流出口：control 基线携带全部投影，follow 携带单个会话的开场快照。 */
 const STREAM_METHODS = ['control', 'follow']
 /** 与 package.json 版本保持一致（发布前由测试校验）。 */
-const PLUGIN_VERSION = '0.2.2'
+const PLUGIN_VERSION = '0.2.3'
 
 /**
  * 解析插件数据目录。
@@ -156,7 +156,14 @@ export function installSessionListFilter(ctx, { getStore, logSystem, decorateLis
     if (typeof original !== 'function') continue
     service[method] = async function teamAdminFilteredUnary(...args) {
       const value = await strip(await original.apply(this, args))
-      return method === 'list' && typeof decorateList === 'function' ? decorateList(value) : value
+      if (method !== 'list' || typeof decorateList !== 'function') return value
+      try {
+        return decorateList(value)
+      } catch (error) {
+        // 补全只是增强：失败也必须把原始列表交给客户端，不能让整个列表请求失败。
+        logSystem(`team-admin：补全会话列表失败（${error instanceof Error ? error.message : String(error)}）`)
+        return value
+      }
     }
     wrapped += 1
   }
