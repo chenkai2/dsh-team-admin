@@ -139,14 +139,15 @@ test('apply 注册 main + sidebar.panellist 全局面板入口，两者用同一
   assert.deepEqual(Array.from(injections, (entry) => entry.name), [
     'main',
     'sidebar.panellist',
+    'conversation.session.header.actions',
     'plugins.bundle.config',
     'settings.plugin.item',
   ])
   for (const entry of injections) assert.strictEqual(typeof entry.factory, 'function')
-  assert.strictEqual(effects.length, 3)
+  assert.strictEqual(effects.length, 4)
 
   for (const entry of injections) entry.factory()
-  assert.strictEqual(registered.length, 4)
+  assert.strictEqual(registered.length, 5)
 
   assert.deepEqual(JSON.parse(JSON.stringify(registered[0].options)), { name: 'main', key: 'team-admin' })
   assert.strictEqual(typeof registered[0].component, 'function')
@@ -167,13 +168,12 @@ test('apply 保留 plugins.bundle.config 与 settings.plugin.item 配置卡片',
   const { injections, registered } = applyModule(createModule(registrations))
   for (const entry of injections) entry.factory()
 
-  assert.strictEqual(registered[2].options.name, 'plugins.bundle.config')
-  assert.strictEqual(registered[2].options.key, '@chenkai114/dsh-team-admin')
-  assert.strictEqual(registered[3].options.name, 'settings.plugin.item')
-  assert.strictEqual(registered[3].options.key, 'team-admin')
-  assert.strictEqual(registered[3].options.label, '智能体团队管理')
-  assert.strictEqual(typeof registered[2].component, 'function')
-  assert.strictEqual(registered[2].component, registered[3].component)
+  const byName = (name) => registered.find((entry) => entry.options.name === name)
+  assert.strictEqual(byName('plugins.bundle.config').options.key, '@chenkai114/dsh-team-admin')
+  assert.strictEqual(byName('settings.plugin.item').options.key, 'team-admin')
+  assert.strictEqual(byName('settings.plugin.item').options.label, '智能体团队管理')
+  assert.strictEqual(typeof byName('plugins.bundle.config').component, 'function')
+  assert.strictEqual(byName('plugins.bundle.config').component, byName('settings.plugin.item').component)
 })
 
 test('全局面板入口的 effect 交付组合清理器，回收两个注入', () => {
@@ -634,4 +634,15 @@ test('installResponseFilter：宿主绕过 window.fetch 时，解析 JSON 的消
   assert.deepStrictEqual(parsed.values.subagentCatalog, [{ id: 'm2' }])
   const text = await new FakeResponse(JSON.stringify({ values: { agentTeam: { members: [{ id: 'm1' }, { id: 'm3' }] } } })).text()
   assert.deepStrictEqual(JSON.parse(text).values.agentTeam.members, [{ id: 'm3' }])
+})
+test('apply 注册页头成员动作（新版宿主恢复旧版成员列表）', () => {
+  const { registrations } = loadApi()
+  const { injections, registered } = applyModule(createModule(registrations))
+  assert.ok(injections.some((entry) => entry.name === 'conversation.session.header.actions'))
+  const headerInjection = injections.find((entry) => entry.name === 'conversation.session.header.actions')
+  assert.ok(headerInjection !== undefined, '应注入页头成员动作')
+  headerInjection.factory()
+  const header = registered.find((entry) => entry.options.name === 'conversation.session.header.actions')
+  assert.ok(header !== undefined, '应注册页头成员动作')
+  assert.strictEqual(header.options.id, 'team-admin-members')
 })

@@ -1,6 +1,6 @@
 {
   "name": "@chenkai114/dsh-team-admin",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "DSH 插件：GUI 管理任意会话的智能体团队 —— 查看成员、删除角色并清理其持久会话（进回收站，可恢复）",
   "type": "module",
   "main": "src/index.js",
@@ -22,7 +22,7 @@
       "platform": "web"
     },
     "requires": {
-      "dsh": ">=0.2.0-alpha.1 <0.3.0"
+      "dsh": ">=0.2.2-alpha.1 <0.3.0"
     }
   },
   "keywords": [

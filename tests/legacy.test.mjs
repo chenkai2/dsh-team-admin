@@ -53,13 +53,38 @@ test('有标题的会话一律不动（0.2.2 的回归点）', () => {
   assert.strictEqual(value.items[0].blank, false)
 })
 
-test('v4 多帧日志不参与补全：无标题时保持原样，不会被隐藏', () => {
+test('小体积 v4 日志：无标题的纯 header 草稿按空白隐藏，不补标题', () => {
   const root = mkdtempSync(join(tmpdir(), 'team-admin-legacy-'))
   writeLog(root, '--ws--', 'session-v4', 'session.v4.jsonl.zstd', [jsonLine({ type: 'session' })])
   const decorate = createLegacyDecorator({ sessionsRoot: root })
-  const value = { items: [{ sessionId: 'session-v4', title: '', blank: false }] }
+  const value = { items: [{ sessionId: 'session-v4', projections: { values: {} }, title: '', blank: false }] }
   decorate(value)
-  assert.strictEqual(value.items[0].title, '')
+  assert.strictEqual(value.items[0].projections.values.title, undefined)
+  assert.strictEqual(value.items[0].blank, true)
+})
+
+test('小体积 v4 日志：只有 header 的草稿会被标 blank（0.2.4 起的回归修复）', () => {
+  const root = mkdtempSync(join(tmpdir(), 'team-admin-legacy-'))
+  writeLog(root, '--ws--', 'session-v4-blank', 'session.v4.jsonl.zstd', [
+    jsonLine({ type: 'session', id: 'x' }),
+    jsonLine({ type: 'permission/preset', seq: 0, data: {} }),
+    jsonLine({ type: 'session/end-seed', seq: 1, data: {} }),
+  ])
+  const decorate = createLegacyDecorator({ sessionsRoot: root })
+  const value = { items: [{ sessionId: 'session-v4-blank', projections: { values: {} }, blank: false }] }
+  decorate(value)
+  assert.strictEqual(value.items[0].blank, true)
+})
+
+test('小体积 v4 日志里有 turn 时不标记 blank', () => {
+  const root = mkdtempSync(join(tmpdir(), 'team-admin-legacy-'))
+  writeLog(root, '--ws--', 'session-v4-turn', 'session.v4.jsonl.zstd', [
+    jsonLine({ type: 'session', id: 'x' }),
+    jsonLine({ type: 'turn/start', seq: 0, data: {} }),
+  ])
+  const decorate = createLegacyDecorator({ sessionsRoot: root })
+  const value = { items: [{ sessionId: 'session-v4-turn', projections: { values: {} }, blank: false }] }
+  decorate(value)
   assert.strictEqual(value.items[0].blank, false)
 })
 

@@ -37,7 +37,7 @@ test('PLUGIN_VERSION stays in sync with package.json', async () => {
 })
 
 test('dsh compatibility range admits current harness line', () => {
-  assert.match(pkg.dsh?.requires?.dsh ?? '', />=0\.2\.0/)
+  assert.match(pkg.dsh?.requires?.dsh ?? '', />=0\.2\.2-alpha\.1/)
 })
 
 test('client bundle registers through the host module loader', async () => {

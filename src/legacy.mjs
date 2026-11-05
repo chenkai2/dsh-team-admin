@@ -13,8 +13,10 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { zstdDecompressSync } from 'node:zlib'
 
-/** 只读旧格式日志；v4 由宿主投影负责，不在这里补。 */
+/** 日志优先级：旧格式优先（宿主没有它们的 title 投影）；v4 只在「小文件」时用于空白判定。 */
 const LEGACY_LOG_NAMES = ['session.v3.jsonl.zstd', 'session.jsonl.zstd']
+/** v4 日志文件名。 */
+const CURRENT_LOG_NAME = 'session.v4.jsonl.zstd'
 /** 默认缓存时长：日志很少变化，五分钟足够。 */
 const DEFAULT_TTL_MS = 300000
 /** 空草稿判定上限：这类日志压缩后只有几百字节到几 KB。 */
@@ -50,10 +52,14 @@ export function createLegacyDecorator(options = {}) {
     if (Date.now() - indexAt > ttlMs) rebuild()
     const dir = index.get(sessionId)
     if (dir === undefined) return null
-    const file = LEGACY_LOG_NAMES.map((name) => join(dir, name)).find((path) => existsSync(path))
+    const legacyFile = LEGACY_LOG_NAMES.map((name) => join(dir, name)).find((path) => existsSync(path))
+    const currentFile = join(dir, CURRENT_LOG_NAME)
+    const file = legacyFile ?? (existsSync(currentFile) ? currentFile : undefined)
     if (file === undefined) return null
     let size = 0
     try { size = statSync(file).size } catch { return null }
+    // v4 日志只用来判定「空白草稿」，且必须是小文件：大文件多帧无法完整解码，绝不参与。
+    if (legacyFile === undefined && size >= BLANK_MAX_BYTES) return null
     // v1/v3 日志同样是多帧 zstd（每次追加一帧），Node 的 zstd API 只解第一帧，
     // 所以优先用 zstd CLI 解全量；CLI 不可用时退回首帧（只少补标题，不会误判）。
     let text = ''

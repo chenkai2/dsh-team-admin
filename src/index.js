@@ -31,7 +31,7 @@ const UNARY_METHODS = ['list', 'projections']
 /** 流出口：control 基线携带全部投影，follow 携带单个会话的开场快照。 */
 const STREAM_METHODS = ['control', 'follow']
 /** 与 package.json 版本保持一致（发布前由测试校验）。 */
-const PLUGIN_VERSION = '0.2.3'
+const PLUGIN_VERSION = '0.2.4'
 
 /**
  * 解析插件数据目录。

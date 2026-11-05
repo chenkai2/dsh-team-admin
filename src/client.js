@@ -116,6 +116,18 @@
 .ta-main .ta-col--detail{overflow:auto;padding-right:2px}
 @media (max-width:760px){.ta-body{grid-template-columns:1fr}.ta-col--list{padding-right:0;padding-bottom:10px;border-right:0;border-bottom:1px solid var(--ta-border)}.ta-sessions{max-height:220px}.ta-main .ta-body{grid-template-rows:minmax(0,1fr) minmax(0,1fr)}}
 @media (prefers-reduced-motion:reduce){.ta-btn{transition:none}}
+
+/* 页头「成员」动作（新版宿主删掉旧版 TeamAction 后的只读恢复） */
+.ta-hdr{position:relative;display:inline-flex;align-items:center}
+.ta-hdr__btn{display:inline-flex;align-items:center;gap:4px;padding:0 6px;height:24px;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;cursor:pointer}
+.ta-hdr__btn:hover{background:var(--dsw-alias-bg-hover);color:var(--dsw-alias-label-primary)}
+.ta-hdr__pop{position:absolute;top:calc(100% + 6px);left:0;z-index:40;min-width:220px;max-width:320px;max-height:300px;overflow:auto;padding:6px;border:1px solid var(--ta-border);border-radius:8px;background:var(--dsw-alias-bg-base);box-shadow:0 8px 24px rgb(0 0 0 / 16%)}
+.ta-hdr__row{display:flex;flex-direction:column;gap:1px;padding:5px 6px;border-radius:6px}
+.ta-hdr__row:hover{background:var(--dsw-alias-bg-hover)}
+.ta-hdr__row--deleted{opacity:.55}
+.ta-hdr__name{font-size:12px;color:var(--dsw-alias-label-primary)}
+.ta-hdr__desc{font-size:11px;color:var(--dsw-alias-label-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ta-hdr__tag{font-size:10px;color:var(--dsw-alias-label-tertiary)}
 `
 
   function isRecord(value) {
@@ -997,6 +1009,61 @@
       return view === 'summary' ? h('div', { className: 'ta-summary' }, CARD_SUMMARY) : h(TeamAdminPanel, null)
     }
 
+    // 旧版宿主（≤0.2.2-alpha.2）自带 TeamAction 成员面板；只在没有它的宿主上补注册，避免重复入口。
+    function hostHasLegacyTeamPanel() {
+      if (typeof document === 'undefined' || document === null || typeof document.querySelectorAll !== 'function') return false
+      const scripts = document.querySelectorAll('script[src]')
+      for (const script of scripts) {
+        const src = typeof script.src === 'string' ? script.src : ''
+        if (src.indexOf('dsh-experimental-client-ui-agent-team') >= 0) return true
+      }
+      return false
+    }
+
+    // 页头「成员」动作：新版宿主（0.2.2-rc.1+）删掉了旧版 TeamAction 的成员/角色列表，
+    // 这里用插件自己的只读数据源（会话日志里的 team/member 事件）把成员列表补回来。
+    // 宿主没有该槽位（旧版）时 inject 挂起，零成本。
+    function TeamMembersAction(props) {
+      const sessionId = pickString(props !== null && props !== undefined ? props.sessionId : undefined, '')
+        || pickString(props !== null && props !== undefined && props.session !== undefined && props.session !== null ? props.session.id : undefined, '')
+      const [state, setState] = React.useState({ loading: false, members: [], open: false })
+      React.useEffect(() => {
+        if (sessionId === '') return undefined
+        let alive = true
+        setState((prev) => ({ ...prev, loading: true }))
+        fetch(teamUrl(sessionId), { headers: { accept: 'application/json' } })
+          .then((response) => (response.ok === true ? response.json() : null))
+          .then((payload) => {
+            if (!alive || payload === null || payload === undefined) return
+            const members = Array.isArray(payload.members) ? payload.members : []
+            setState((prev) => ({ ...prev, loading: false, members }))
+          })
+          .catch((error) => {
+            console.warn('[team-admin] 读取团队成员失败：', error)
+            if (alive) setState((prev) => ({ ...prev, loading: false }))
+          })
+        return () => { alive = false }
+      }, [sessionId])
+      if (sessionId === '' || state.members.length === 0) return null
+      const active = state.members.filter((member) => member.dismissed !== true).length
+      const rows = state.members.map((member) => h('div', {
+        key: pickString(member.id, '') + ':' + pickString(member.name, ''),
+        className: member.dismissed === true ? 'ta-hdr__row ta-hdr__row--deleted' : 'ta-hdr__row',
+      },
+      h('span', { className: 'ta-hdr__name' }, pickString(member.name, '')),
+      pickString(member.description, '') === '' ? null : h('span', { className: 'ta-hdr__desc' }, pickString(member.description, '')),
+      member.dismissed === true ? h('span', { className: 'ta-hdr__tag' }, '已删除') : null))
+      return h('div', { className: 'ta-hdr' },
+        h('button', {
+          type: 'button',
+          className: 'ta-hdr__btn',
+          'aria-expanded': state.open ? 'true' : 'false',
+          title: '团队成员（只读）',
+          onClick: () => setState((prev) => ({ ...prev, open: !prev.open })),
+        }, h(TeamAdminIcon, { size: 14 }), '成员 ' + String(active)),
+        state.open ? h('div', { className: 'ta-hdr__pop', role: 'dialog', 'aria-label': '团队成员' }, rows) : null)
+    }
+
     // 侧栏入口图标：sidebar.panellist 渲染契约组件，宿主传 { size, active }
     function TeamAdminIcon(props) {
       const size = props !== null && props !== undefined && typeof props.size === 'number' ? props.size : 16
@@ -1059,6 +1126,12 @@
             }
           }
         }, 'team-admin: main + sidebar.panellist')
+        // 新版宿主的页头成员面板已移除：注册一个只读成员动作把它补回来。
+        if (!hostHasLegacyTeamPanel()) effect(() => slots.inject('conversation.session.header.actions', () => slots.register({
+          name: 'conversation.session.header.actions',
+          id: 'team-admin-members',
+          order: 40,
+        }, TeamMembersAction)), 'team-admin: header members')
         effect(() => slots.inject('plugins.bundle.config', () => slots.register({
           name: 'plugins.bundle.config',
           key: PKG_ID,
