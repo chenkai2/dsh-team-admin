@@ -1009,16 +1009,6 @@
       return view === 'summary' ? h('div', { className: 'ta-summary' }, CARD_SUMMARY) : h(TeamAdminPanel, null)
     }
 
-    // 旧版宿主（≤0.2.2-alpha.2）自带 TeamAction 成员面板；只在没有它的宿主上补注册，避免重复入口。
-    function hostHasLegacyTeamPanel() {
-      if (typeof document === 'undefined' || document === null || typeof document.querySelectorAll !== 'function') return false
-      const scripts = document.querySelectorAll('script[src]')
-      for (const script of scripts) {
-        const src = typeof script.src === 'string' ? script.src : ''
-        if (src.indexOf('dsh-experimental-client-ui-agent-team') >= 0) return true
-      }
-      return false
-    }
 
     // 页头「成员」动作：新版宿主（0.2.2-rc.1+）删掉了旧版 TeamAction 的成员/角色列表，
     // 这里用插件自己的只读数据源（会话日志里的 team/member 事件）把成员列表补回来。
@@ -1026,7 +1016,21 @@
     function TeamMembersAction(props) {
       const sessionId = pickString(props !== null && props !== undefined ? props.sessionId : undefined, '')
         || pickString(props !== null && props !== undefined && props.session !== undefined && props.session !== null ? props.session.id : undefined, '')
-      const [state, setState] = React.useState({ loading: false, members: [], open: false })
+      // 旧版宿主（≤0.2.2-alpha.2）自带 TeamAction 成员面板：这类宿主的 health 会给出 maxMembers；
+      // 新版（rc.1+）移除了 roster / maxMembers，health.maxMembers 为 null —— 只在那种宿主上补入口。
+      const [state, setState] = React.useState({ loading: false, legacyHost: null, members: [], open: false })
+      React.useEffect(() => {
+        let alive = true
+        fetch(API_BASE + '/health', { headers: { accept: 'application/json' } })
+          .then((response) => (response.ok === true ? response.json() : null))
+          .then((payload) => {
+            if (!alive || payload === null || payload === undefined) return
+            const legacyHost = typeof payload.maxMembers === 'number'
+            setState((prev) => ({ ...prev, legacyHost }))
+          })
+          .catch(() => { if (alive) setState((prev) => ({ ...prev, legacyHost: false })) })
+        return () => { alive = false }
+      }, [])
       React.useEffect(() => {
         if (sessionId === '') return undefined
         let alive = true
@@ -1044,7 +1048,7 @@
           })
         return () => { alive = false }
       }, [sessionId])
-      if (sessionId === '' || state.members.length === 0) return null
+      if (state.legacyHost !== false || sessionId === '' || state.members.length === 0) return null
       const active = state.members.filter((member) => member.dismissed !== true).length
       const rows = state.members.map((member) => h('div', {
         key: pickString(member.id, '') + ':' + pickString(member.name, ''),
@@ -1126,8 +1130,8 @@
             }
           }
         }, 'team-admin: main + sidebar.panellist')
-        // 新版宿主的页头成员面板已移除：注册一个只读成员动作把它补回来。
-        if (!hostHasLegacyTeamPanel()) effect(() => slots.inject('conversation.session.header.actions', () => slots.register({
+        // 新版宿主的页头成员面板已移除：注册一个只读成员动作把它补回来（旧版宿主在组件内自行隐藏）。
+        effect(() => slots.inject('conversation.session.header.actions', () => slots.register({
           name: 'conversation.session.header.actions',
           id: 'team-admin-members',
           order: 40,
