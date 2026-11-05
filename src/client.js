@@ -121,6 +121,7 @@
 .ta-hdr{position:relative;display:inline-flex;align-items:center}
 .ta-hdr__btn{display:inline-flex;align-items:center;gap:4px;padding:0 6px;height:24px;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;cursor:pointer}
 .ta-hdr__btn:hover{background:var(--dsw-alias-bg-hover);color:var(--dsw-alias-label-primary)}
+.ta-hdr__pop--fixed{z-index:1200}
 .ta-hdr__pop{position:absolute;top:calc(100% + 6px);left:0;z-index:40;min-width:220px;max-width:320px;max-height:300px;overflow:auto;padding:6px;border:1px solid var(--ta-border);border-radius:8px;background:var(--dsw-alias-bg-base);box-shadow:0 8px 24px rgb(0 0 0 / 16%)}
 .ta-hdr__row{display:flex;flex-direction:column;gap:1px;padding:5px 6px;border-radius:6px}
 .ta-hdr__row:hover{background:var(--dsw-alias-bg-hover)}
@@ -984,6 +985,13 @@
       console.error('[team-admin] react 不可用，团队管理卡片已禁用：', error)
       return { inject: [], apply() {} }
     }
+    // 页头动作区会裁剪溢出内容（宿主契约要求浮层 portal），成员弹层必须挂到 body。
+    let ReactDOM = null
+    try {
+      ReactDOM = require('react-dom')
+    } catch (error) {
+      console.warn('[team-admin] react-dom 不可用，成员弹层将退化为内联定位：', error)
+    }
     const h = React.createElement
 
     // React 只负责一块宿主 div；面板内容由同一个 controller 渲染。
@@ -1018,7 +1026,8 @@
         || pickString(props !== null && props !== undefined && props.session !== undefined && props.session !== null ? props.session.id : undefined, '')
       // 旧版宿主（≤0.2.2-alpha.2）自带 TeamAction 成员面板：这类宿主的 health 会给出 maxMembers；
       // 新版（rc.1+）移除了 roster / maxMembers，health.maxMembers 为 null —— 只在那种宿主上补入口。
-      const [state, setState] = React.useState({ loading: false, legacyHost: null, members: [], open: false })
+      const [state, setState] = React.useState({ loading: false, legacyHost: null, members: [], open: false, anchor: null })
+      const buttonRef = React.useRef(null)
       React.useEffect(() => {
         let alive = true
         fetch(API_BASE + '/health', { headers: { accept: 'application/json' } })
@@ -1048,6 +1057,26 @@
           })
         return () => { alive = false }
       }, [sessionId])
+      React.useEffect(() => {
+        if (state.open !== true) return undefined
+        const onPointerDown = (event) => {
+          const node = buttonRef.current
+          const target = event !== null && event !== undefined ? event.target : null
+          if (node !== null && node !== undefined && target !== null && typeof node.contains === 'function' && node.contains(target)) return
+          if (target !== null && target !== undefined && typeof target.closest === 'function' && target.closest('.ta-hdr__pop') !== null) return
+          setState((prev) => ({ ...prev, open: false, anchor: null }))
+        }
+        const onKeyDown = (event) => {
+          if (event !== null && event !== undefined && event.key === 'Escape') setState((prev) => ({ ...prev, open: false, anchor: null }))
+        }
+        document.addEventListener('pointerdown', onPointerDown, true)
+        document.addEventListener('keydown', onKeyDown)
+        return () => {
+          document.removeEventListener('pointerdown', onPointerDown, true)
+          document.removeEventListener('keydown', onKeyDown)
+        }
+      }, [state.open])
+
       if (state.legacyHost !== false || sessionId === '' || state.members.length === 0) return null
       const active = state.members.filter((member) => member.dismissed !== true).length
       const rows = state.members.map((member) => h('div', {
@@ -1057,15 +1086,33 @@
       h('span', { className: 'ta-hdr__name' }, pickString(member.name, '')),
       pickString(member.description, '') === '' ? null : h('span', { className: 'ta-hdr__desc' }, pickString(member.description, '')),
       member.dismissed === true ? h('span', { className: 'ta-hdr__tag' }, '已删除') : null))
+      const toggle = () => {
+        setState((prev) => {
+          if (prev.open) return { ...prev, open: false, anchor: null }
+          const node = buttonRef.current
+          const rect = node !== null && node !== undefined && typeof node.getBoundingClientRect === 'function' ? node.getBoundingClientRect() : null
+          return { ...prev, open: true, anchor: rect === null ? null : { left: rect.left, top: rect.bottom + 6 } }
+        })
+      }
+      const popover = state.open
+        ? h('div', {
+            className: state.anchor === null ? 'ta-hdr__pop' : 'ta-hdr__pop ta-hdr__pop--fixed',
+            role: 'dialog',
+            'aria-label': '团队成员',
+            style: state.anchor === null ? undefined : { position: 'fixed', left: state.anchor.left + 'px', top: state.anchor.top + 'px' },
+          }, rows)
+        : null
+      const portal = popover === null ? null : (ReactDOM !== null && typeof ReactDOM.createPortal === 'function' && typeof document !== 'undefined' ? ReactDOM.createPortal(popover, document.body) : popover)
       return h('div', { className: 'ta-hdr' },
         h('button', {
+          ref: buttonRef,
           type: 'button',
           className: 'ta-hdr__btn',
           'aria-expanded': state.open ? 'true' : 'false',
           title: '团队成员（只读）',
-          onClick: () => setState((prev) => ({ ...prev, open: !prev.open })),
+          onClick: toggle,
         }, h(TeamAdminIcon, { size: 14 }), '成员 ' + String(active)),
-        state.open ? h('div', { className: 'ta-hdr__pop', role: 'dialog', 'aria-label': '团队成员' }, rows) : null)
+        portal)
     }
 
     // 侧栏入口图标：sidebar.panellist 渲染契约组件，宿主传 { size, active }
